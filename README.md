@@ -176,5 +176,7 @@ We wrote a series of blog articles, about Mustache in general, and `SynMustache`
 
 You can use also [Synopse forums](http://synopse.info/forum/viewtopic.php?id=1720) to obtain direct support from the developpers, or send your feedback.
 
+The documentation is [available as a single pdf file](http://blog.synopse.info/public/Documents/SynMustache.pdf), if needed.
+
 
 The Synopse team

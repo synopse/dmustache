@@ -34,6 +34,22 @@ You may go to the [Synopse Open Source code repository](http://synopse.info/foss
 
 Note that even if `SynMustache` is part of the [mORMot Open Source framework](http://mormot.net/), it is just one brick of it, so you can use this unit with any of your projects, without the need to use either the database, ORM, SOA or other features of *mORMot*.
 
+License
+=======
+
+This library is part of the Open Source *mORMot* framework, so is released under the same licensing terms:
+
+Licensed under a disjunctive tri-license giving you the choice of one of
+the three following sets of free software/open source licensing terms:
+
+  * Mozilla Public License, version 1.1 or later;
+  * GNU General Public License, version 2.0 or later;
+  * GNU Lesser General Public License, version 2.1 or later.
+
+This allows the use of our code in as wide a variety of software projects
+as possible, while still maintaining copyleft on code we wrote.
+
+
 Sample Code
 ===========
 

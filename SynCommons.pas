@@ -485,6 +485,7 @@ unit SynCommons;
     for direct process of numerical variants (e.g. array indexes)
   - new RawUTF8ToVariant() and VarRecToVariant() procedures
   - added VariantDynArrayToJSON/JSONToVariantDynArray/ValuesToVariantDynArray()
+  - added VariantDynArrayClear() function (faster e.g. for array of TDocVariant)
   - added VariantToInlineValue() and VarRecToInlineValue() functions
   - added VarRecAsChar() and overloaded Int32ToUTF8() Int64ToStr() Curr64ToStr()
     ExtendedToStr() PointerToHex() UInt32ToUtf8() procedures
@@ -1284,7 +1285,14 @@ function UCS4ToUTF8(ucs4: cardinal; Dest: PUTF8Char): integer;
 // UTF-8 encoded String
 // - will assume CurrentAnsiConvert.CodePage prior to Delphi 2009
 // - newer UNICODE versions of Delphi will retrieve the code page from string
-procedure AnyAnsiToUTF8(const s: RawByteString; var result: RawUTF8);
+procedure AnyAnsiToUTF8(const s: RawByteString; var result: RawUTF8); overload;
+
+/// direct conversion of an AnsiString with an unknown code page into an
+// UTF-8 encoded String
+// - will assume CurrentAnsiConvert.CodePage prior to Delphi 2009
+// - newer UNICODE versions of Delphi will retrieve the code page from string
+function AnyAnsiToUTF8(const s: RawByteString): RawUTF8; overload;
+  {$ifdef HASINLINE}inline;{$endif}
 
 /// direct conversion of a WinAnsi (CodePage 1252) string into a UTF-8 encoded String
 // - faster than SysUtils: don't use Utf8Encode(WideString) -> no Windows.Global(),
@@ -1510,6 +1518,10 @@ procedure VariantToUTF8(const V: Variant; var result: RawUTF8;
 /// convert any Variant into a value encoded as with :(..:) inlined parameters
 // in FormatUTF8(Format,Args,Params)
 procedure VariantToInlineValue(const V: Variant; var result: RawUTF8);
+
+/// faster alternative to Finalize(aVariantDynArray)
+// - for instance, an array of TDocVariant will be optimized for speed
+procedure VariantDynArrayClear(var Value: TVariantDynArray);
 
 {$endif NOVARIANTS}
 
@@ -8228,6 +8240,10 @@ const
   // - depending on the compiler version
   varSynUnicode = {$ifdef UNICODE}varUString{$else}varOleStr{$endif};
 
+  /// this variant type will map the current string type
+  // - depending on the compiler version
+  varNativeString = {$ifdef UNICODE}varUString{$else}varString{$endif};
+
   /// those TVarData.VType values are un-managed and do not need to be cleared
   // - used mainly in low-level code similar to the folllowing:
   // !  if not(TVarData(aVariant).VType in VTYPE_STATIC) then
@@ -8457,10 +8473,11 @@ function VariantLoad(const Bin: RawByteString;
 /// retrieve a variant value from a JSON number or string
 // - follows TTextWriter.AddVariantJSON() format (calls GetVariantFromJSON)
 // - will instantiate either an Integer, Int64, currency, double or string value
-// (as RawUTF8), guessing the best numeric type according to
-// the textual content, and string in all other cases, except TryCustomVariants
-// points to some options and input is a known object or array, either encoded
-// as strict-JSON (i.e. {..} or [..]), or with some extended (e.g. BSON) syntax
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
 // - warning: the JSON buffer will be modified in-place during process - use
 // a temporary copy or the overloaded functions with RawUTF8 parameter
 // if you need to access it later
@@ -8469,11 +8486,12 @@ function VariantLoadJSON(var Value: variant; JSON: PUTF8Char;
 
 /// retrieve a variant value from a JSON number or string
 // - follows TTextWriter.AddVariantJSON() format (calls GetVariantFromJSON)
-// - will return either an Integer, Int64, currency, double or string value
-// (as RawUTF8), guessing the best numeric type according to
-// the textual content, and string in all other cases, except TryCustomVariants
-// points to some options and input is a known object or array, either encoded
-// as strict-JSON (i.e. {..} or [..]), or with some extended (e.g. BSON) syntax
+// - will instantiate either an Integer, Int64, currency, double or string value
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
 // - this overloaded procedure will make a temporary copy before JSON parsing
 // and return the variant as result
 procedure VariantLoadJSON(var Value: Variant; const JSON: RawUTF8;
@@ -8481,11 +8499,12 @@ procedure VariantLoadJSON(var Value: Variant; const JSON: RawUTF8;
 
 /// retrieve a variant value from a JSON number or string
 // - follows TTextWriter.AddVariantJSON() format (calls GetVariantFromJSON)
-// - will return either an Integer, Int64, currency, double or string value
-// (as RawUTF8), guessing the best numeric type according to
-// the textual content, and string in all other cases, except TryCustomVariants
-// points to some options and input is a known object or array, either encoded
-// as strict-JSON (i.e. {..} or [..]), or with some extended (e.g. BSON) syntax
+// - will instantiate either an Integer, Int64, currency, double or string value
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
 // - this overloaded procedure will make a temporary copy before JSON parsing
 // and return the variant as result
 function VariantLoadJSON(const JSON: RawUTF8;
@@ -8528,10 +8547,12 @@ function VariantSaveJSONLength(const Value: variant; Escape: TTextWriterKind=twJ
 /// low-level function to set a variant from an unesceped JSON number or string
 // - expect the JSON input buffer to be already unescaped, e.g. by GetJSONField()
 // - is called e.g. by function VariantLoadJSON()
-// - will return either an Integer, Int64, currency, double or string in Value
-// (as RawUTF8), guessing the best numeric type according to
-// the textual content, and string in all other cases, except TryCustomVariants
-// points to some options and input is a strict-JSON { object } or [ array ]
+// - will instantiate either an Integer, Int64, currency, double or string value
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
 procedure GetVariantFromJSON(JSON: PUTF8Char; wasString: Boolean; var Value: variant;
   TryCustomVariants: PDocVariantOptions=nil);
 
@@ -8746,10 +8767,10 @@ type
     // - overridden method since instance may use a by-reference copy pattern
     procedure CopyByValue(var Dest: TVarData; const Source: TVarData); override; 
     /// handle type conversion
-    // - only types processes by now are string/OleStr/UnicodeString/date
+    // - only types processed by now are string/OleStr/UnicodeString/date
     procedure Cast(var Dest: TVarData; const Source: TVarData); override;
     /// handle type conversion
-    // - only types processes by now are string/OleStr/UnicodeString/date
+    // - only types processed by now are string/OleStr/UnicodeString/date
     procedure CastTo(var Dest: TVarData; const Source: TVarData;
       const AVarType: TVarType); override;
     /// compare two variant values
@@ -8859,6 +8880,12 @@ type
     // - will be almost immediate, since TVariantDynArray is reference-counted
     procedure InitArrayFromVariants(const Items: TVariantDynArray;
       aOptions: TDocVariantOptions=[]);
+    /// initialize a variant instance to store some document-based array content
+    // - array will be initialized with data supplied as variant dynamic array
+    // - if Items is [], the variant will be set as null
+    // - will be almost immediate, since TVariantDynArray is reference-counted
+    procedure InitObjectFromVariants(const aNames: TRawUTF8DynArray;
+       const aValues: TVariantDynArray; aOptions: TDocVariantOptions=[]);
     /// initialize a variant instance to store some document-based object content
     // from a supplied JSON array or JSON object content
     // - warning: the incoming JSON buffer will be modified in-place: so you
@@ -11599,6 +11626,11 @@ begin
       AnsiBufferToRawUTF8(pointer(s),length(s));
   end;
 end;
+
+function AnyAnsiToUTF8(const s: RawByteString): RawUTF8;
+begin
+  AnyAnsiToUTF8(s,result);
+end;
   
 function WinAnsiBufferToUtf8(Dest: PUTF8Char; Source: PAnsiChar; SourceChars: Cardinal): PUTF8Char;
 begin
@@ -12357,168 +12389,6 @@ begin
   SetString(result,P,@tmp[23]-P);
 end;
 
-{ note: those VariantToInteger*() functions are expected to be there }
-
-function VariantToInteger(const V: Variant; var Value: integer): boolean;
-begin
-  with TVarData(V) do
-  case VType of
-  varNull,
-  varEmpty:    Value := 0;
-  varBoolean:  Value := ord(VBoolean);
-  varSmallint: Value := VSmallInt;
-  {$ifndef DELPHI5OROLDER}
-  varShortInt: Value := VShortInt;
-  varWord:     Value := VWord;
-  varLongWord:
-    if (VLongWord>=cardinal(Low(integer))) and (VLongWord<=cardinal(High(integer))) then
-      Value := VLongWord else begin
-      result := false;
-      exit;
-    end;
-  {$endif}
-  varByte:     Value := VByte;
-  varInteger:  Value := VInteger;
-  varInt64:
-    if (VInt64>=Low(integer)) and (VInt64<=High(integer)) then
-      Value := VInt64 else begin
-      result := False;
-      exit;
-    end;
-  else
-    if VType=varVariant or varByRef then begin
-      result := VariantToInteger(PVariant(VPointer)^,Value);
-      exit;
-    end else begin
-      result := false;
-      exit;
-    end;
-  end;
-  result := true;
-end;
-
-function VariantToInt64(const V: Variant; var Value: Int64): boolean;
-begin
-  with TVarData(V) do
-  case VType of
-  varNull,
-  varEmpty:    Value := 0;
-  varBoolean:  Value := ord(VBoolean);
-  varSmallint: Value := VSmallInt;
-  {$ifndef DELPHI5OROLDER}
-  varShortInt: Value := VShortInt;
-  varWord:     Value := VWord;
-  varLongWord: Value := VLongWord;
-  {$endif}
-  varByte:     Value := VByte;
-  varInteger:  Value := VInteger;
-  varWord64,
-  varInt64:    Value := VInt64;
-  else
-    if VType=varVariant or varByRef then begin
-      result := VariantToInt64(PVariant(VPointer)^,Value);
-      exit;
-    end else begin
-      result := false;
-      exit;
-    end;
-  end;
-  result := true;
-end;
-
-function VariantToIntegerDef(const V: Variant; DefaultValue: integer): integer;
-begin
-  if not VariantToInteger(V,result) then
-    result := DefaultValue;
-end;
-
-{$ifndef NOVARIANTS}
-
-procedure VariantToInlineValue(const V: Variant; var result: RawUTF8);
-var wasString: boolean;
-begin
-  VariantToUTF8(V,result,wasString);
-  if wasString then
-    result := QuotedStr(pointer(result),'"');
-end;
-
-procedure VariantToUTF8(const V: Variant; var result: RawUTF8;
-  var wasString: boolean); overload;
-begin
-  wasString := false;
-  with TVarData(V) do
-  case VType of
-  varEmpty,
-  varNull:
-    result := 'null';
-  varSmallint:
-    Int32ToUTF8(VSmallInt,result);
-  {$ifndef DELPHI5OROLDER}
-  varShortInt:
-    Int32ToUTF8(VShortInt,result);
-  varWord:
-    UInt32ToUTF8(VWord,result);
-  varLongWord:
-    UInt32ToUTF8(VLongWord,result);
-  {$endif}
-  varByte,
-  varBoolean:
-    UInt32ToUTF8(VByte,result);
-  varInteger:
-    Int32ToUTF8(VInteger,result);
-  varInt64:
-    Int64ToUTF8(VInt64,result);
-  varSingle:
-    ExtendedToStr(VSingle,SINGLE_PRECISION,result);
-  varDouble:
-    ExtendedToStr(VDouble,DOUBLE_PRECISION,result);
-  varCurrency:
-    Curr64ToStr(VInt64,result);
-  varDate:     begin
-    wasString := true;
-    DateTimeToIso8601TextVar(VDate,'T',result);
-  end;
-  varString: begin
-    wasString := true;
-  {$ifdef UNICODE}
-    AnyAnsiToUTF8(RawByteString(VString),result);
-  end;
-  varUString: begin
-    wasString := true;
-    RawUnicodeToUtf8(VAny,length(UnicodeString(VAny)),result);
-  end;
-  {$else}
-    result := RawUTF8(VString);
-  end;
-  {$endif}
-  varOleStr: begin
-    wasString := true;
-    RawUnicodeToUtf8(VAny,length(WideString(VAny)),result);
-  end;
-  else
-  if VType=varByRef or varVariant then
-    VariantToUTF8(PVariant(VPointer)^,result,wasString) else
-  if VType=varByRef or varOleStr then begin
-    wasString := true;
-    RawUnicodeToUtf8(pointer(PWideString(VAny)^),length(PWideString(VAny)^),result);
-  end else
-  {$ifdef UNICODE}
-  if VType=varByRef or varUString then begin
-    wasString := true;
-    StringToUTF8(PUnicodeString(VUString)^,result);
-  end else
-  {$endif}
-    VariantSaveJSON(V,twJSONEscape,result); // will handle also custom types
-  end;
-end;
-
-function VariantToUTF8(const V: Variant): RawUTF8;
-var wasString: boolean;
-begin
-  VariantToUTF8(V,result,wasString);
-end;
-{$endif NOVARIANTS}
-
 function VarRecAsChar(const V: TVarRec): integer;
 begin
   case V.VType of
@@ -13045,6 +12915,203 @@ begin
   {$ifdef FPC}FieldTable := AlignToPtr(FieldTable);{$endif}
   result := FieldTable^.Size;
 end;
+
+{ note: those VariantToInteger*() functions are expected to be there }
+
+function VariantToInteger(const V: Variant; var Value: integer): boolean;
+begin
+  with TVarData(V) do
+  case VType of
+  varNull,
+  varEmpty:    Value := 0;
+  varBoolean:  Value := ord(VBoolean);
+  varSmallint: Value := VSmallInt;
+  {$ifndef DELPHI5OROLDER}
+  varShortInt: Value := VShortInt;
+  varWord:     Value := VWord;
+  varLongWord:
+    if (VLongWord>=cardinal(Low(integer))) and (VLongWord<=cardinal(High(integer))) then
+      Value := VLongWord else begin
+      result := false;
+      exit;
+    end;
+  {$endif}
+  varByte:     Value := VByte;
+  varInteger:  Value := VInteger;
+  varInt64:
+    if (VInt64>=Low(integer)) and (VInt64<=High(integer)) then
+      Value := VInt64 else begin
+      result := False;
+      exit;
+    end;
+  else
+    if VType=varVariant or varByRef then begin
+      result := VariantToInteger(PVariant(VPointer)^,Value);
+      exit;
+    end else begin
+      result := false;
+      exit;
+    end;
+  end;
+  result := true;
+end;
+
+function VariantToInt64(const V: Variant; var Value: Int64): boolean;
+begin
+  with TVarData(V) do
+  case VType of
+  varNull,
+  varEmpty:    Value := 0;
+  varBoolean:  Value := ord(VBoolean);
+  varSmallint: Value := VSmallInt;
+  {$ifndef DELPHI5OROLDER}
+  varShortInt: Value := VShortInt;
+  varWord:     Value := VWord;
+  varLongWord: Value := VLongWord;
+  {$endif}
+  varByte:     Value := VByte;
+  varInteger:  Value := VInteger;
+  varWord64,
+  varInt64:    Value := VInt64;
+  else
+    if VType=varVariant or varByRef then begin
+      result := VariantToInt64(PVariant(VPointer)^,Value);
+      exit;
+    end else begin
+      result := false;
+      exit;
+    end;
+  end;
+  result := true;
+end;
+
+function VariantToIntegerDef(const V: Variant; DefaultValue: integer): integer;
+begin
+  if not VariantToInteger(V,result) then
+    result := DefaultValue;
+end;
+
+{$ifndef NOVARIANTS}
+
+procedure VariantToInlineValue(const V: Variant; var result: RawUTF8);
+var wasString: boolean;
+begin
+  VariantToUTF8(V,result,wasString);
+  if wasString then
+    result := QuotedStr(pointer(result),'"');
+end;
+
+procedure VariantToUTF8(const V: Variant; var result: RawUTF8;
+  var wasString: boolean); overload;
+begin
+  wasString := false;
+  with TVarData(V) do
+  case VType of
+  varEmpty,
+  varNull:
+    result := 'null';
+  varSmallint:
+    Int32ToUTF8(VSmallInt,result);
+  {$ifndef DELPHI5OROLDER}
+  varShortInt:
+    Int32ToUTF8(VShortInt,result);
+  varWord:
+    UInt32ToUTF8(VWord,result);
+  varLongWord:
+    UInt32ToUTF8(VLongWord,result);
+  {$endif}
+  varByte,
+  varBoolean:
+    UInt32ToUTF8(VByte,result);
+  varInteger:
+    Int32ToUTF8(VInteger,result);
+  varInt64:
+    Int64ToUTF8(VInt64,result);
+  varSingle:
+    ExtendedToStr(VSingle,SINGLE_PRECISION,result);
+  varDouble:
+    ExtendedToStr(VDouble,DOUBLE_PRECISION,result);
+  varCurrency:
+    Curr64ToStr(VInt64,result);
+  varDate:     begin
+    wasString := true;
+    DateTimeToIso8601TextVar(VDate,'T',result);
+  end;
+  varString: begin
+    wasString := true;
+  {$ifdef UNICODE}
+    AnyAnsiToUTF8(RawByteString(VString),result);
+  end;
+  varUString: begin
+    wasString := true;
+    RawUnicodeToUtf8(VAny,length(UnicodeString(VAny)),result);
+  end;
+  {$else}
+    result := RawUTF8(VString);
+  end;
+  {$endif}
+  varOleStr: begin
+    wasString := true;
+    RawUnicodeToUtf8(VAny,length(WideString(VAny)),result);
+  end;
+  else
+  if VType=varByRef or varVariant then
+    VariantToUTF8(PVariant(VPointer)^,result,wasString) else
+  if VType=varByRef or varOleStr then begin
+    wasString := true;
+    RawUnicodeToUtf8(pointer(PWideString(VAny)^),length(PWideString(VAny)^),result);
+  end else
+  {$ifdef UNICODE}
+  if VType=varByRef or varUString then begin
+    wasString := true;
+    StringToUTF8(PUnicodeString(VUString)^,result);
+  end else
+  {$endif}
+    VariantSaveJSON(V,twJSONEscape,result); // will handle also custom types
+  end;
+end;
+
+function VariantToUTF8(const V: Variant): RawUTF8;
+var wasString: boolean;
+begin
+  VariantToUTF8(V,result,wasString);
+end;
+
+procedure VariantDynArrayClear(var Value: TVariantDynArray);
+var p: PDynArrayRec;
+    V: PVarData;
+    i: integer;
+    handler: TCustomVariantType;
+begin
+  if pointer(Value)=nil then
+    exit;
+  p := pointer(PtrUInt(Value)-Sizeof(TDynArrayRec)); // p^ = start of heap object
+  V := pointer(Value);
+  pointer(Value) := nil;
+  if p^.refCnt>1 then begin
+    InterlockedDecrement(p^.refCnt);
+    exit;
+  end;
+  if (V^.VType>varNativeString) and
+     FindCustomVariantType(V^.VType,handler) then begin
+    for i := 1 to p^.length do begin
+      // faster clear of custom variant uniformous array
+      if V^.VType=handler.VarType then
+        handler.Clear(V^) else
+      if not (V^.VType in VTYPE_STATIC) then
+        VarClear(variant(V^));
+      inc(V);
+    end;
+  end else
+  for i := 1 to p^.length do begin
+    if not (V^.VType in VTYPE_STATIC) then
+      VarClear(variant(V^));
+    inc(V);
+  end;
+  FreeMem(p);
+end;
+
+{$endif NOVARIANTS}
 
 
 {$ifdef UNICODE}
@@ -24535,7 +24602,7 @@ var EndOfObject: AnsiChar;
                      PBoolean(Data)^ := GetInteger(PropValue)<>0;
       ptByte:      PByte(Data)^ := GetCardinal(PropValue);
       ptCardinal:  PCardinal(Data)^ := GetCardinal(PropValue);
-      ptCurrency:  PCurrency(Data)^ := StrToCurr64(PropValue);
+      ptCurrency:  PInt64(Data)^ := StrToCurr64(PropValue);
       ptDouble:    PDouble(Data)^ := GetExtended(PropValue);
       ptInt64:     PInt64(Data)^ := GetInt64(PropValue);
       ptInteger:   PInteger(Data)^ := GetInteger(PropValue);
@@ -25342,10 +25409,8 @@ begin
       VType := varDouble;
       VDouble := V.VExtended^;
     end;
-    vtVariant: begin
-      VType := varVariant or varByRef;
-      VPointer := V.VVariant;
-    end;
+    vtVariant:
+      result := V.VVariant^;
     vtAnsiString: begin
       VType := varString;
       VAny := nil;
@@ -25917,6 +25982,20 @@ begin
   end;
 end;
 
+procedure TDocVariantData.InitObjectFromVariants(const aNames: TRawUTF8DynArray;
+  const aValues: TVariantDynArray; aOptions: TDocVariantOptions=[]);
+begin
+  if (aNames=nil) or (aValues=nil) or (length(aNames)<>length(aValues)) then
+    VType := varNull else begin
+    Init(aOptions);
+    VCount := length(aNames);
+    VKind := dvObject;
+    VName := aNames; // direct by-reference copy
+    VValue := aValues;
+  end;
+end;
+
+
 function TDocVariantData.InitJSONInPlace(JSON: PUTF8Char;
   aOptions: TDocVariantOptions; aEndOfObject: PUTF8Char): PUTF8Char;
 var EndOfObject: AnsiChar;
@@ -26026,7 +26105,7 @@ begin
     VName := Source^.VName;
     pointer(VValue) := nil;
   end else
-    VValue := nil;          // force re-create full copy of all values
+    VariantDynArrayClear(VValue); // force re-create full copy of all values
   if VCount>0 then begin
     SetLength(VValue,VCount);
     for i := 0 to VCount-1 do begin
@@ -26034,7 +26113,7 @@ begin
       while v^.VType=varByRef or varVariant do
         v := v^.VPointer;
       t := v^.VType;
-      if t<=varString then // simple string/number types copy
+      if t<=varNativeString then // simple string/number types copy
         VValue[i] := variant(v^) else
       if t=VType then // direct recursive copy for TDocVariant
         TDocVariantData(VValue[i]).InitCopy(variant(v^),aOptions) else
@@ -26046,6 +26125,7 @@ begin
         VValue[i] := variant(v^); // default copy
     end;
   end;
+  VariantDynArrayClear(SourceVValue); // faster alternative
   VOptions := aOptions; // may not be the same as in Source
 end;
 
@@ -26455,7 +26535,7 @@ end;
 procedure TDocVariant.Clear(var V: TVarData);
 begin
   //Assert(V.VType=DocVariantType.VarType);
-  Finalize(TDocVariantData(V).VValue,1);
+  VariantDynArrayClear(TDocVariantData(V).VValue);
   Finalize(TDocVariantData(V).VName,1);
   ZeroFill(V); // will set V.VType := varEmpty and VCount=0
 end;
@@ -28124,7 +28204,11 @@ var p: PDynArrayRec;
 begin // this method is faster than default System.DynArraySetLength() function
   // check that new array length is not just a hidden finalize
   if NewLength=0 then begin
-    _DynArrayClear(Value^,ArrayType);
+    {$ifndef NOVARIANTS}
+    if ArrayType=TypeInfo(TVariantDynArray) then
+      VariantDynArrayClear(TVariantDynArray(Value^)) else
+    {$endif}
+      _DynArrayClear(Value^,ArrayType);
     exit;
   end;
   // retrieve old length
@@ -28144,7 +28228,7 @@ begin // this method is faster than default System.DynArraySetLength() function
       _FinalizeArray(pa+NeededSize,ElemType,OldLength-NewLength);
     ReallocMem(p,neededSize);
   end else begin
-    Dec(p^.refCnt); 
+    InterlockedDecrement(p^.refCnt); 
     GetMem(p,neededSize);
     minLength := oldLength;
     if minLength>newLength then

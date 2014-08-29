@@ -24,6 +24,7 @@
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
+  
   Alternatively, the contents of this file may be used under the terms of
   either the GNU General Public License Version 2 or later (the "GPL"), or
   the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
@@ -68,7 +69,7 @@
   - added SQLITE3_FASTCALL conditional (shared by SQLite3 related units)
   - added NEWRTTINOTUSED conditional (unset by default, for compatibility) - see
     http://synopse.info/forum/viewtopic.php?id=1394
-  - now handles Delphi XE3 and XE4 (32 and 64 bit)
+  - now handles Delphi XE3, XE4, XE5 and XE6 (32 and 64 bit)
 
 }
 
@@ -114,15 +115,15 @@
 // version) - you are free to use it, but we have unset it by default
 
 {.$define NOX64PATCHRTL}
-// if define, with Win64 Delphi XE2+ compilers, FillChar() and Move() WON'T use
+// if defined, with Win64 Delphi XE2+ compilers, FillChar() and Move() WON'T use
 // optimized x64 assembler implementation instead of slower purepascal version
 // - is not defined by default, since speed gain is noticeable
 
 {.$define NEWRTTINOTUSED}
 // if defined, the new RTTI (available since Delphi 2010) won't be linked to
 // the executable: resulting file size will be much smaller, and mORMot won't
-// be affected (since it uses only "classic" RTTI) - left undefined by default
-// to ensure other units are not affected
+// be affected (unless you use the enhanced RTTI for record/dynamic array JSON
+// serialization) - left undefined by default to ensure minimal impact
 
 {$ifdef LVCL}
    // NormToUpper[] exists only in our enhanced RTL
@@ -185,6 +186,10 @@
     {$ASMMODE INTEL} // as Delphi expects, and I use to write
   {$endif CPU64}
 
+  {$define FPC_OR_PUREPASCAL}
+  // exceptions interception code in FPC differs from Delphi
+  {$define NOEXCEPTIONINTERCEPT}
+
 {$else FPC}
 
   {$ifdef CPUX64}
@@ -197,13 +202,29 @@
     {$define CPU32} // Delphi compiler for 32 bit CPU
     {$undef CPU64}
   {$endif CPUX64}
+
+  // defines if exceptions shall not be intercepted
+  {.$define NOEXCEPTIONINTERCEPT}
+
   {$IFDEF CONDITIONALEXPRESSIONS}  // Delphi 6 or newer
-    {$ifdef VER140} // Delphi 6
-      {$define DELPHI6OROLDER}
-      {$undef ENHANCEDRTL} // Delphi 6 doesn't have our Enhanced Runtime library
+    {$ifdef LINUX}
+      {$if RTLVersion = 14.5}
+        // Kylix 3 will be handled just like Delphi 7
+        {$undef ENHANCEDRTL} // Enhanced Runtime library not fully tested yet
+        {$define NOVARCOPYPROC}
+        {$define NOEXCEPTIONINTERCEPT} // no exception interception yet
+      {$else}
+      Kylix1/2 are unsupported
+      {$ifend}
     {$else}
-      {$define WITHUXTHEME}
-    {$endif}
+      {$ifdef VER140} // Delphi 6
+        {$define DELPHI6OROLDER}
+        {$define NOVARCOPYPROC}
+        {$undef ENHANCEDRTL} // Delphi 6 doesn't have our Enhanced Runtime library
+      {$else}
+        {$define WITHUXTHEME} // Delphi 7 and up handle UI theming
+      {$endif}
+    {$endif LINUX}
     {$if CompilerVersion >= 17}
     {$ifend}
     {$if CompilerVersion >= 18}
@@ -240,9 +261,17 @@
     {$ifend}
     {$if CompilerVersion >= 26.0}
       {$define ISDELPHIXE5}
+      {$define PUBLISHRECORD}
+      // if defined, a sftUtf8Record will be defined in order to serialize published
+      // properties with a record type: but even if such properties can be defined,
+      // there is RTTI generated only since Delphi XE5: so it won't work before :( see
+      // http://docwiki.embarcadero.com/RADStudio/en/Classes_and_Objects#Published_Members
     {$ifend}
     {$if CompilerVersion >= 27.0}
       {$define ISDELPHIXE6}
+    {$ifend}
+    {$if CompilerVersion >= 28.0}
+      {$define ISDELPHIXE7}
     {$ifend}
   {$ELSE}
     // Delphi 5 or older
@@ -250,6 +279,7 @@
     {$define DELPHI5OROLDER}
     {$define MSWINDOWS}
     {$define NOVARIANTS}
+    {$define NOVARCOPYPROC}
     {$undef ENHANCEDRTL} // Delphi 5 doesn't have our Enhanced Runtime library
   {$ENDIF}
 
@@ -257,6 +287,7 @@
 
 {$ifdef PUREPASCAL}
   {$define NODELPHIASM}
+  {$define FPC_OR_PUREPASCAL}
 {$endif PUREPASCAL}
 
 {$R-} // disable Range checking in our code

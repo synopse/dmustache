@@ -28,6 +28,7 @@ unit SynLZ;
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
+  
   Alternatively, the contents of this file may be used under the terms of
   either the GNU General Public License Version 2 or later (the "GPL"), or
   the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
@@ -262,7 +263,7 @@ type
   PtrUInt = {$ifdef CPUX64} NativeUInt {$else} cardinal {$endif};
 {$endif}
 
-{$ifndef CONDITIONALEXPRESSIONS}
+{$ifdef DELPHI5OROLDER}
 type // Delphi 5 doesn't have those base types defined :(
   PByte = ^Byte;
   PWord = ^Word;
@@ -1196,12 +1197,12 @@ begin
       inc(s2,s1);
       inc(s1,P^[3]);
       inc(s2,s1);
-      inc(PtrUInt(P),16);
+      inc(PByte(P),16);
     end;
     for i := 1 to (L shr 2)and 3 do begin // 4 bytes (DWORD) by loop
       inc(s1,P^[0]);
       inc(s2,s1);
-      inc(PtrUInt(P),4);
+      inc(PInteger(P));
     end;
     case L and 3 of // remaining 0..3 bytes
     1: inc(s1,PByte(P)^);

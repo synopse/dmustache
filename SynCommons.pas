@@ -700,7 +700,7 @@ uses
   Windows,
   Messages,
 {$endif}
-{$ifdef KYLIX}
+{$ifdef KYLIX3}
   Types,
 {$endif}
   Classes,
@@ -19036,12 +19036,7 @@ begin
     exit;
   F := FileOpen(FileName,fmOpenRead or fmShareDenyNone);
   if PtrInt(F)>=0 then begin
-{$ifdef LINUX}
-    Size := FileSeek(F,0,soFromEnd);
-    FileSeek(F,0,soFromBeginning);
-{$else}
     Size := GetFileSize(F,nil);
-{$endif}
     SetLength(result,Size);
     if FileRead(F,pointer(Result)^,Size)<>Size then
       result := '';
@@ -19210,22 +19205,28 @@ begin
 end;
 
 function FileSize(const FileName: TFileName): Int64;
+{$ifdef LINUX}
+begin
+  result := GetLargeFileSize(FileName);
+end;
+{$else}
 var F: THandle;
 begin
   F := FileOpen(FileName,fmOpenRead or fmShareDenyNone);
   if PtrInt(F)>=0 then begin
-{$ifdef LINUX}
-    result := FileSeek64(F,0,soFromEnd);
-{$else}
     PInt64Rec(@result)^.Lo := GetFileSize(F,@PInt64Rec(@result)^.Hi);
-{$endif}
     FileClose(F);
-  end
-  else
+  end else
     result := 0;
 end;
+{$endif}
 
 function FileAgeToDateTime(const FileName: TFileName): TDateTime;
+{$ifdef LINUX}
+begin
+  result := GetFileAgeAsDateTime(FileName);
+end;
+{$else}
 {$ifdef HASNEWFILEAGE}
 begin
   if not FileAge(FileName,result) then
@@ -19238,6 +19239,7 @@ begin
 {$endif}
     result := 0;
 end;
+{$endif}
 
 function DirectoryDelete(const Directory: TFileName; const Mask: TFileName='*.*';
   DeleteOnlyFilesNotDirectory: Boolean=false): Boolean;
@@ -22577,7 +22579,7 @@ begin
 end;
 {$else}
 begin
-  Result := FPCNowUTC;
+  Result := GetNowUTC;
 end;
 {$endif}
 
@@ -45687,4 +45689,4 @@ finalization
   GarbageCollectorFree;
   if GlobalCriticalSectionInitialized then
     DeleteCriticalSection(GlobalCriticalSection);
-end.
+end.

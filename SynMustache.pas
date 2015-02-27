@@ -29,6 +29,7 @@ unit SynMustache;
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
+  - shura1990
   
   Alternatively, the contents of this file may be used under the terms of
   either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -353,6 +354,8 @@ type
     // ! dummy := TSynMustache.Parse(
     // !   '{{#items}}'#13#10'{{Int}}={{Test}}'#13#10'{{/items}}').Render(
     // !   aClient.RetrieveDocVariantArray(TSQLRecordTest,'items','Int,Test'));
+    // - set EscapeInvert = true to force {{value}} NOT to escape HTML chars
+    // and {{{value}} escaping chars (may be useful e.g. for code generation)
     function Render(const Context: variant; Partials: TSynMustachePartials=nil;
       Helpers: TSynMustacheHelpers=nil; OnTranslate: TOnStringTranslate=nil;
       EscapeInvert: boolean=false): RawUTF8;
@@ -363,6 +366,8 @@ type
     // - is just a wrapper around Render(_JsonFast())
     // - you can write e.g. with the extended JSON syntax:
     // ! html := mustache.RenderJSON('{things:["one", "two", "three"]}');
+    // - set EscapeInvert = true to force {{value}} NOT to escape HTML chars
+    // and {{{value}} escaping chars (may be useful e.g. for code generation)
     function RenderJSON(const JSON: RawUTF8; Partials: TSynMustachePartials=nil;
       Helpers: TSynMustacheHelpers=nil; OnTranslate: TOnStringTranslate=nil;
       EscapeInvert: boolean=false): RawUTF8; overload;
@@ -373,6 +378,8 @@ type
     // - is just a wrapper around Render(_JsonFastFmt())
     // - you can write e.g. with the extended JSON syntax:
     // !   html := mustache.RenderJSON('{name:?,value:?}',[],['Chris',10000]);
+    // - set EscapeInvert = true to force {{value}} NOT to escape HTML chars
+    // and {{{value}} escaping chars (may be useful e.g. for code generation)
     function RenderJSON(JSON: PUTF8Char; const Args,Params: array of const;
       Partials: TSynMustachePartials=nil; Helpers: TSynMustacheHelpers=nil;
       OnTranslate: TOnStringTranslate=nil;
@@ -1040,9 +1047,9 @@ begin
   Name := pointer(ValueName);
   i := PosEx(' ',ValueName);
   if i>1 then begin
-    inc(Name,i);
     helper := TSynMustache.HelperFind(Helpers,pointer(ValueName),i-1);
     if helper>=0 then begin
+      inc(Name,i);
       GetValueFromContext(Name,temp); // allows {{helper1 helper2 value}} call
       n := fContextCount+4;
       if length(fTempGetValueFromContextHelper)<n then

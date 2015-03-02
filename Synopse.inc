@@ -189,8 +189,12 @@
   {$undef DOPATCHTRTL}
   {$define USETYPEINFO}  // will use SynFPCTypInfo.pas wrapper
   {$define HASINLINE}
-  {$define NODELPHIASM}   // need some low-level System.@LStrFromPCharLen calls
+  {$define NODELPHIASM}   // ignore low-level System.@LStrFromPCharLen calls
   {$define NOX64PATCHRTL} // official FPC's RTL already includes this x64 asm
+
+  {$ifdef ANDROID}
+    {$define LINUX}
+  {$endif}
 
   {$ifdef CPU64}
     {$define PUREPASCAL}
@@ -200,6 +204,9 @@
     {$else}
     {$ASMMODE INTEL} // as Delphi expects, and I use to write
     {$endif}
+    // FPC has its own RTTI layout only since late 3.x
+    // when http://bugs.freepascal.org/view.php?id=26774 has been fixed
+    {.$define HASINTERFACERTTI}
   {$endif CPU64}
 
   {$define FPC_OR_PUREPASCAL}
@@ -208,6 +215,9 @@
   {$define NOEXCEPTIONINTERCEPT}
 
   {$ifdef VER2_7}
+    {$define ISFPC27}
+  {$endif}
+  {$ifdef VER3_0}
     {$define ISFPC27}
   {$endif}
   {$ifdef VER3_1}
@@ -389,7 +399,10 @@
 {$endif}
 
 // Only Win32+Linux32 do support our SQLite3 static linked library  
-{$ifdef CPU64}  
+{$ifdef CPU64}
+  {$define NOSQLITE3STATIC}
+{$endif}
+{$ifdef ANDROID}
   {$define NOSQLITE3STATIC}
 {$endif}
 
@@ -408,13 +421,15 @@
   // but less needed under Linux, since thread creation sounds much cheaper
   // see http://www.akkadia.org/drepper/nptl-design.pdf
   {$define USETHREADPOOL}
-  {.$define ONLYUSEHTTPSOCKET} // for debugging
-  {.$define USELIBCURL}   // for testing under Windows (no big advantage)
+  {.$define ONLYUSEHTTPSOCKET} // for testing under Windows (should use http.sys)
+  {.$define USELIBCURL}     // for testing under Windows (no benefit vs WinHTTP)
 {$else}
   // http.sys server is Windows-specific
   {$define ONLYUSEHTTPSOCKET}
+  {$ifndef ANDROID}
   // cross-platform libcurl has a great API -> TCurlHttp and TSQLHttpClientCurl
   {$define USELIBCURL}
+  {$endif}
 {$endif}
 
 

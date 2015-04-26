@@ -423,6 +423,7 @@ unit SynCommons;
   - FastCode-based x86 asm Move() procedure will handle source=dest
   - faster x86/x64 asm versions of StrUInt32() StrInt32() StrInt64() functions
   - new StrUInt64(), UniqueRawUTF8(), FastNewRawUTF8() and SetRawUTF8() functions
+  - introducing UTF8ToInteger() overloaded functions
   - recognize 8.1 and upcoming "Threshold" 9 in TWindowsVersion
   - added TypeInfo, ElemSize, ElemType read-only properties to TDynArray
   - added DynArrayLoad() and DynArraySave() helper functions
@@ -2218,6 +2219,18 @@ function GetUTF8Char(P: PUTF8Char): cardinal;
 
 /// get the UCS4 char stored in P^ (decode UTF-8 if necessary)
 function NextUTF8UCS4(var P: PUTF8Char): cardinal;
+  {$ifdef HASINLINE}inline;{$endif}
+
+/// get the signed 32 bits integer value stored in a RawUTF8 string
+// - we use the PtrInt result type, even if expected to be 32 bits, to use
+// native CPU register size (don't want any 32 bits overflow here)
+function UTF8ToInteger(const value: RawUTF8; Default: PtrInt=0): PtrInt; overload;
+  {$ifdef HASINLINE}inline;{$endif}
+
+/// get and check range of a signed 32 bits integer stored in a RawUTF8 string
+// - we use the PtrInt result type, even if expected to be 32 bits, to use
+// native CPU register size (don't want any 32 bits overflow here)
+function UTF8ToInteger(const value: RawUTF8; Min,Max: PtrInt; Default: PtrInt=0): PtrInt; overload;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// encode a string to be compatible with URI encoding
@@ -4547,7 +4560,9 @@ type
     /// compute a TDocVariant document from the stored values
     // - output variant will be reset and filled as a TDocVariant instance,
     // ready to be serialized as a JSON object
-    procedure AsDocVariant(out DocVariant: variant);
+    procedure AsDocVariant(out DocVariant: variant); overload;
+    /// compute a TDocVariant document from the stored values
+    function AsDocVariant: variant; overload; {$ifdef HASINLINE}inline;{$endif}
     /// merge the stored values into a TDocVariant document
     // - existing properties would be updated, then new values will be added to
     // the supplied TDocVariant instance, ready to be serialized as a JSON object
@@ -5604,6 +5619,7 @@ type
   // - sllNewRun will be written when a process opens a rotated log
   // - sllDDDError will log any DDD-related low-level error information
   // - sllDDDInfo will log any DDD-related low-level debugging information
+  // - sllMonitoring will log the statistics information (if available)
   TSynLogInfo = (
     sllNone, sllInfo, sllDebug, sllTrace, sllWarning, sllError,
     sllEnter, sllLeave,
@@ -5611,7 +5627,7 @@ type
     sllFail, sllSQL, sllCache, sllResult, sllDB, sllHTTP, sllClient, sllServer,
     sllServiceCall, sllServiceReturn, sllUserAuth,
     sllCustom1, sllCustom2, sllCustom3, sllCustom4, sllNewRun,
-    sllDDDError, sllDDDInfo);
+    sllDDDError, sllDDDInfo, sllMonitoring);
 
   /// used to define a set of logging level abilities
   // - i.e. a combination of none or several logging event
@@ -8046,6 +8062,9 @@ function HexToBin(const Hex: RawUTF8): RawByteString; overload;
 /// fast conversion from binary data into hexa chars
 function BinToHex(const Bin: RawByteString): RawUTF8; overload;
 
+/// fast conversion from binary data into hexa chars
+function BinToHex(Bin: PAnsiChar; BinBytes: integer): RawUTF8; overload;
+
 /// fast conversion from binary data into hexa chars, ready to be displayed
 // - BinBytes contain the bytes count to be converted: Hex^ must contain
 // enough space for at least BinBytes*2 chars
@@ -10286,6 +10305,16 @@ procedure VariantToRawByteString(const Value: variant; var Dest: RawByteString);
 procedure SetVariantNull(var Value: variant);
   {$ifdef HASINLINE}inline;{$endif}
 
+/// same as VarIsEmpty(V) or VarIsEmpty(V), but faster 
+function VarIsEmptyOrNull(const V: Variant): Boolean;
+  {$ifdef HASINLINE}inline;{$endif}
+
+type
+  TVarDataTypes = set of 0..255;
+
+/// allow to check for a specific set of TVarData.VType
+function VarIs(const V: Variant; const VTypes: TVarDataTypes): Boolean;
+  {$ifdef HASINLINE}inline;{$endif}
 
 {$ifndef NOVARIANTS}
 
@@ -18781,6 +18810,12 @@ begin
   SynCommons.BinToHex(pointer(Bin),pointer(Result),L);
 end;
 
+function BinToHex(Bin: PAnsiChar; BinBytes: integer): RawUTF8;
+begin
+  FastNewRawUTF8(result,BinBytes*2);
+  SynCommons.BinToHex(Bin,pointer(Result),BinBytes);
+end;
+
 function HexToBin(const Hex: RawUTF8): RawByteString; overload;
 var L: integer;
 begin
@@ -20728,6 +20763,22 @@ var err: integer;
 begin
   result := GetInteger(P,err);
   if err<>0 then
+    result := Default;
+end;
+
+function UTF8ToInteger(const value: RawUTF8; Default: PtrInt=0): PtrInt;
+var err: integer;
+begin
+  result := GetInteger(pointer(value),err);
+  if err<>0 then
+    result := Default;
+end;
+
+function UTF8ToInteger(const value: RawUTF8; Min,Max: PtrInt; Default: PtrInt=0): PtrInt;
+var err: integer;
+begin
+  result := GetInteger(pointer(value),err);
+  if (err<>0) or (result<Min) or (result>Max) then
     result := Default;
 end;
 
@@ -29189,7 +29240,7 @@ begin
     result := TJSONCustomParserRTTI.CreateFromTypeName(
       aPropertyName,aCustomRecordTypeName);
     if result=nil then
-      raise ESynException.CreateUTF8('Unknown ptCustom for %.AddItem(%: %)',
+      raise ESynException.CreateUTF8('Unregistered ptCustom for %.AddItem(%: %)',
         [self,aPropertyName,aCustomRecordTypeName]);
   end else
     result := TJSONCustomParserRTTI.Create(aPropertyName,aPropertyType);
@@ -29539,6 +29590,38 @@ begin // slightly faster than Value := Null
       VarClear(Value);
       PPtrUInt(@VType)^ := varNull;
     end;
+end;
+
+function VarIsEmptyOrNull(const V: Variant): Boolean;
+var VD: PVarData;
+begin
+  VD := @V;
+  repeat
+    if VD^.VType<>varVariant or varByRef then
+      break;
+    VD := VD^.VPointer;
+    if VD=nil then begin
+      result := true;
+      exit;
+    end;
+  until false;
+  result := VD^.VType<=varNull;
+end;
+
+function VarIs(const V: Variant; const VTypes: TVarDataTypes): Boolean;
+var VD: PVarData;
+begin
+  VD := @V;
+  repeat
+    if VD^.VType<>varVariant or varByRef then
+      break;
+    VD := VD^.VPointer;
+    if VD=nil then begin
+      result := true;
+      exit;
+    end;
+  until false;
+  result := VD^.VType in VTypes;
 end;
 
 {$ifndef NOVARIANTS}
@@ -44549,6 +44632,11 @@ begin
       RawUTF8ToVariant(List[i].Value,VValue[i]);
     end;
   end;
+end;
+
+function TSynNameValue.AsDocVariant: variant;
+begin
+  AsDocVariant(result);
 end;
 
 function TSynNameValue.MergeDocVariant(var DocVariant: variant): integer;

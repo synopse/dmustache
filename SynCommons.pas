@@ -10493,10 +10493,10 @@ const
 
   /// those TVarData.VType values are un-managed and do not need to be cleared
   // - used mainly in low-level code similar to the folllowing:
-  // !  if not(TVarData(aVariant).VType in VTYPE_STATIC) then
+  // !  if TVarData(aVariant).VType and VTYPE_STATIC<>0 then
   // !    VarClear(aVariant);
-  VTYPE_STATIC: set of varEmpty..varWord64 =
-    [varEmpty..varDate,varBoolean,varShortInt..varWord64];
+  // - equals private constant varDeepData in Variants.pas 
+  VTYPE_STATIC = $BFE8;
 
 /// same as Dest := TVarData(Source) for simple values
 // - will return TRUE for all simple values after varByRef unreference, and
@@ -10518,11 +10518,13 @@ procedure RawByteStringToVariant(const Data: RawByteString; var Value: variant);
 // function call
 procedure VariantToRawByteString(const Value: variant; var Dest: RawByteString);
 
-/// same as Value := Null, but faster
+/// same as Value := Null, but slightly faster
 procedure SetVariantNull(var Value: variant);
   {$ifdef HASINLINE}inline;{$endif}
 
 /// same as VarIsEmpty(V) or VarIsEmpty(V), but faster
+// - we also discovered some issues with FPC's Variants unit, so this function
+// may be used even in end-user cross-compiler code
 function VarIsEmptyOrNull(const V: Variant): Boolean;
   {$ifdef HASINLINE}inline;{$endif}
 
@@ -11511,6 +11513,27 @@ type
     procedure SortByName(Compare: TUTF8Compare=nil);
     /// reverse the order of the document object or array items 
     procedure Reverse;
+    /// create a TDocVariant object, from a selection of properties of this
+    // document, by property name
+    // - if the document is a dvObject, to reduction will be applied to all
+    // its properties  
+    // - if the document is a dvArray, the reduction will be applied to each
+    // stored item, if it is a document
+    procedure Reduce(const aPropNames: array of RawUTF8; aCaseSensitive: boolean;
+      out result: TDocVariantData); overload;
+    /// create a TDocVariant object, from a selection of properties of this
+    // document, by property name
+    // - always returns a TDocVariantData, even if no property name did match
+    // (in this case, it is dvUndefined)
+    function Reduce(const aPropNames: array of RawUTF8; aCaseSensitive: boolean): variant; overload;
+    /// create a TDocVariant array, from the values of a single properties of
+    // this document, specified by name
+    procedure ReduceAsArray(const aPropName: RawUTF8; out result: TDocVariantData); overload;
+    /// create a TDocVariant array, from the values of a single properties of
+    // this document, specified by name
+    // - always returns a TDocVariantData, even if no property name did match
+    // (in this case, it is dvUndefined)
+    function ReduceAsArray(const aPropName: RawUTF8): variant; overload;
 
     /// how this document will behave
     // - those options are set when creating the instance
@@ -15670,13 +15693,13 @@ begin
       // faster clear of custom variant uniformous array
       if V^.VType=handler.VarType then
         handler.Clear(V^) else
-      if not (V^.VType in VTYPE_STATIC) then
+      if V^.VType and VTYPE_STATIC<>0 then
         VarClear(variant(V^));
       inc(V);
     end;
   end else
   for i := 1 to p^.length do begin
-    if not (V^.VType in VTYPE_STATIC) then
+    if V^.VType and VTYPE_STATIC<>0 then
       VarClear(variant(V^));
     inc(V);
   end;
@@ -30132,12 +30155,13 @@ begin
     typ := TVarData(Source).VType and not varByRef;
     case typ of
     varVariant:
-      if PVarData(TVarData(Source).VPointer)^.VType in VTYPE_STATIC then begin
+      if PVarData(TVarData(Source).VPointer)^.VType in
+          [varEmpty..varDate,varBoolean,varShortInt..varWord64] then begin
         Dest := PVarData(TVarData(Source).VPointer)^;
         result := true;
       end else
         result := false;
-    varNull..varDate,varBoolean,varShortInt..varWord64: begin
+    varEmpty..varDate,varBoolean,varShortInt..varWord64: begin
       Dest.VType := typ;
       Dest.VInt64 :=  PInt64(TVarData(Source).VAny)^;
       result := true;
@@ -30152,7 +30176,7 @@ end;
 procedure RawByteStringToVariant(Data: PByte; DataLen: Integer; var Value: variant);
 begin
   with TVarData(Value) do begin
-    if not (VType in VTYPE_STATIC) then
+    if VType and VTYPE_STATIC<>0 then
       VarClear(Value);
     if (Data=nil) or (DataLen<=0) then
       VType := varNull else begin
@@ -30166,7 +30190,7 @@ end;
 procedure RawByteStringToVariant(const Data: RawByteString; var Value: variant);
 begin
   with TVarData(Value) do begin
-    if not (VType in VTYPE_STATIC) then
+    if VType and VTYPE_STATIC<>0 then
       VarClear(Value);
     if Data='' then
       VType := varNull else begin
@@ -30192,7 +30216,7 @@ end;
 procedure SetVariantNull(var Value: variant);
 begin // slightly faster than Value := Null
   with TVarData(Value) do
-    if VType in VTYPE_STATIC then
+    if VType and VTYPE_STATIC=0 then
       PPtrUInt(@VType)^ := varNull else begin
       VarClear(Value);
       PPtrUInt(@VType)^ := varNull;
@@ -30212,7 +30236,7 @@ begin
       exit;
     end;
   until false;
-  result := VD^.VType<=varNull;
+  result := (VD^.VType<=varNull) or (VD^.VType=varNull or varByRef);
 end;
 
 function VarIs(const V: Variant; const VTypes: TVarDataTypes): Boolean;
@@ -30240,11 +30264,13 @@ procedure GetJSONToAnyVariant(var Value: variant; var JSON: PUTF8Char;
 
 procedure SetVariantByRef(const Source: Variant; var Dest: Variant);
 begin
-  if not(TVarData(Dest).VType in VTYPE_STATIC) then
+  if TVarData(Dest).VType and VTYPE_STATIC<>0 then
     VarClear(Dest);
   if (TVarData(Source).VType=varVariant or varByRef) or
-     (TVarData(Source).VType in VTYPE_STATIC) then // already byref or simple
-    TVarData(Dest) := TVarData(Source) else begin
+     (TVarData(Source).VType in // already byref or simple
+       [varEmpty..varDate,varBoolean,varShortInt..varWord64]) then
+    TVarData(Dest) := TVarData(Source) else
+  if not SetVariantUnRefSimpleValue(Source,TVarData(Dest)) then begin
     TVarData(Dest).VType := varVariant or varByRef;
     TVarData(Dest).VPointer := @Source;
   end;
@@ -30252,9 +30278,9 @@ end;
 
 procedure SetVariantByValue(const Source: Variant; var Dest: Variant);
 begin
-  if not(TVarData(Dest).VType in VTYPE_STATIC) then
+  if TVarData(Dest).VType and VTYPE_STATIC<>0 then
     VarClear(Dest);
-  if TVarData(Source).VType in VTYPE_STATIC then
+  if TVarData(Source).VType in [varEmpty..varDate,varBoolean,varShortInt..varWord64] then
     TVarData(Dest) := TVarData(Source) else
   if not SetVariantUnRefSimpleValue(Source,TVarData(Dest)) then
     if TVarData(Source).VType=varVariant or varByRef then
@@ -30275,7 +30301,7 @@ end;
 procedure RawUTF8ToVariant(Txt: PUTF8Char; TxtLen: integer; var Value: variant);
 begin
   with TVarData(Value) do begin
-    if not (VType in VTYPE_STATIC) then
+    if VType and VTYPE_STATIC<>0 then
       VarClear(Value);
     VType := varString;
     VAny := nil; // avoid GPF below when assigning a string variable to VAny
@@ -30286,7 +30312,7 @@ end;
 procedure RawUTF8ToVariant(const Txt: RawUTF8; var Value: variant);
 begin
   with TVarData(Value) do begin
-    if not (VType in VTYPE_STATIC) then
+    if VType and VTYPE_STATIC<>0 then
       VarClear(Value);
     VType := varString;
     VAny := nil; // avoid GPF below when assigning a string variable to VAny
@@ -30308,7 +30334,7 @@ end;
 procedure RawUTF8ToVariant(const Txt: RawUTF8; var Value: TVarData;
   ExpectedValueType: word);
 begin
-  if not (Value.VType in VTYPE_STATIC) then
+  if Value.VType and VTYPE_STATIC<>0 then
     VarClear(variant(Value));
   Value.VType := ExpectedValueType;
   Value.VAny := nil; // avoid GPF below
@@ -30477,7 +30503,7 @@ function VariantLoad(var Value: variant; Source: PAnsiChar;
 var LenBytes: Cardinal;
 begin
   with TVarData(Value) do begin
-    if not(VType in VTYPE_STATIC) then
+    if VType and VTYPE_STATIC<>0 then
       VarClear(Value);
     VType := PWord(Source)^;
     inc(Source,SizeOf(VType));
@@ -30618,7 +30644,7 @@ end;
 
 procedure VarRecToVariant(const V: TVarRec; var result: variant);
 begin
-  if TVarData(result).VType in VTYPE_STATIC then
+  if TVarData(result).VType and VTYPE_STATIC=0 then
     TVarData(result).VType := varEmpty else
     VarClear(result);
   with TVarData(result) do
@@ -30805,7 +30831,7 @@ procedure TSynInvokeableVariantType.Copy(var Dest: TVarData;
 begin
   if Indirect then
     SimplisticCopy(Dest,Source,true) else begin
-    if not(Dest.VType in VTYPE_STATIC) then
+    if Dest.VType and VTYPE_STATIC<>0 then
       VarClear(variant(Dest)); // Dest may be a complex type
     Dest := Source;
   end;
@@ -30874,7 +30900,7 @@ var i: integer;
     ToBeParsed: PUTF8Char;
     wasParsedWithinString: boolean;
 begin
-  if not(TVarData(Value).VType in VTYPE_STATIC) then
+  if TVarData(Value).VType and VTYPE_STATIC<>0 then
     VarClear(Value);
   if JSON^ in [#1..' '] then repeat inc(JSON) until not(JSON^ in [#1..' ']);
   if (Options=nil) or (JSON^ in ['1'..'9']) then begin // obvious simple type
@@ -30970,7 +30996,7 @@ begin
   end;
   // handle simple text or numerical values
   with TVarData(Value) do begin
-    if VType in VTYPE_STATIC then
+    if VType and VTYPE_STATIC=0 then
       VType := varEmpty else
       VarClear(Value);
     if (JSON=nil) or ((PInteger(JSON)^=NULL_LOW) and not wasString) then begin
@@ -31726,6 +31752,63 @@ begin
   end;
 end;
 
+function TDocVariantData.Reduce(const aPropNames: array of RawUTF8;
+  aCaseSensitive: boolean): variant;
+begin
+  VarClear(result);
+  Reduce(aPropNames,aCaseSensitive,PDocVariantData(@result)^);
+end;
+
+procedure TDocVariantData.Reduce(const aPropNames: array of RawUTF8;
+  aCaseSensitive: boolean; out result: TDocVariantData);
+var i,j: integer;
+    reduced: TDocVariantData;
+begin
+  result.InitFast;
+  if (VCount=0) or (high(aPropNames)<0) then
+    exit;
+  case VKind of
+  dvObject:
+    if aCaseSensitive then begin
+      for i := 0 to VCount-1 do
+        for j := 0 to high(aPropNames) do
+          if VName[i]=aPropNames[j] then
+            result.AddValue(VName[i],VValue[i]);
+    end else
+      for i := 0 to VCount-1 do
+        for j := 0 to high(aPropNames) do
+          if IdemPropNameU(VName[i],aPropNames[j]) then
+            result.AddValue(VName[i],VValue[i]);
+  dvArray:
+    for i := 0 to VCount-1 do begin
+      DocVariantDataSafe(VValue[i])^.Reduce(aPropNames,aCaseSensitive,reduced);
+      if reduced.VKind=dvObject then
+        result.AddItem(variant(reduced));
+    end;
+  end;
+end;
+
+function TDocVariantData.ReduceAsArray(const aPropName: RawUTF8): variant;
+begin
+  VarClear(result);
+  ReduceAsArray(aPropName,PDocVariantData(@result)^);
+end;
+
+procedure TDocVariantData.ReduceAsArray(const aPropName: RawUTF8;
+  out result: TDocVariantData);
+var i,j: integer;
+begin
+  result.InitFast;
+  if (VCount=0) or (aPropName='') or (VKind<>dvArray) then
+    exit;
+  for i := 0 to VCount-1 do
+    with DocVariantDataSafe(VValue[i])^ do begin
+      j := GetValueIndex(aPropName);
+      if j>=0 then
+        result.AddItem(VValue[j]);
+    end;
+end;
+
 function TDocVariantData.Delete(Index: integer): boolean;
 begin
   if cardinal(Index)>=cardinal(VCount) then
@@ -32348,7 +32431,7 @@ begin
   if Indirect then
     SimplisticCopy(Dest,Source,true) else
     if dvoValueCopiedByReference in TDocVariantData(Source).Options then begin
-      if not(Dest.VType in VTYPE_STATIC) then
+      if Dest.VType and VTYPE_STATIC<>0 then
         VarClear(variant(Dest)); // Dest may be a complex type
       pointer(TDocVariantData(Dest).VName) := nil;      // avoid GPF
       pointer(TDocVariantData(Dest).VValue) := nil;
@@ -32363,7 +32446,7 @@ var S: TDocVariantData absolute Source;
     i: integer;
 begin
   //Assert(Source.VType=DocVariantType.VarType);
-  if not(Dest.VType in VTYPE_STATIC) then
+  if Dest.VType and VTYPE_STATIC<>0 then
     VarClear(variant(Dest)); // Dest may be a complex type
   D.VType := S.VType;
   D.VOptions := S.VOptions;
@@ -32393,7 +32476,7 @@ begin
   if AVarType=VarType then begin
     VariantToUTF8(Variant(Source),Tmp,wasString);
     if wasString then begin
-      if not(Dest.VType in VTYPE_STATIC) then
+      if Dest.VType and VTYPE_STATIC<>0 then
         VarClear(variant(Dest));
       variant(Dest) := _JSONFast(Tmp); // convert from JSON text
       exit;
@@ -32445,7 +32528,7 @@ end;
 
 class function TDocVariant.New(Options: TDocVariantOptions): Variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).Init(Options);
 end;
@@ -32453,7 +32536,7 @@ end;
 class function TDocVariant.NewObject(const NameValuePairs: array of const;
   Options: TDocVariantOptions=[]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitObject(NameValuePairs,Options);
 end;
@@ -32461,7 +32544,7 @@ end;
 class function TDocVariant.NewArray(const Items: array of const;
   Options: TDocVariantOptions=[]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitArray(Items,Options);
 end;
@@ -32469,7 +32552,7 @@ end;
 class function TDocVariant.NewArray(const Items: TVariantDynArray;
   Options: TDocVariantOptions=[]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitArrayFromVariants(Items,Options);
 end;
@@ -32483,7 +32566,7 @@ end;
 class function TDocVariant.NewUnique(const SourceDocVariant: variant;
   Options: TDocVariantOptions=[dvoReturnNullForUnknownProperty]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitCopy(SourceDocVariant,Options);
 end;
@@ -32532,7 +32615,7 @@ end;
 function _Obj(const NameValuePairs: array of const;
   Options: TDocVariantOptions=[]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitObject(NameValuePairs,Options);
 end;
@@ -32540,7 +32623,7 @@ end;
 function _Arr(const Items: array of const;
   Options: TDocVariantOptions=[]): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitArray(Items,Options);
 end;
@@ -32555,7 +32638,7 @@ begin
      (TVarData(Obj).VType<>DocVariantType.VarType) or
      (TDocVariantData(Obj).Kind<>dvObject) then begin
     // Obj is not a valid TDocVariant object -> create new
-    if not(TVarData(Obj).VType in VTYPE_STATIC) then
+    if TVarData(Obj).VType and VTYPE_STATIC<>0 then
       VarClear(Obj);
     TDocVariantData(Obj).InitObject(NameValuePairs,JSON_OPTIONS[true]);
   end else
@@ -32581,14 +32664,14 @@ end;
 
 function _ObjFast(const NameValuePairs: array of const): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitObject(NameValuePairs,JSON_OPTIONS[true]);
 end;
 
 function _ArrFast(const Items: array of const): variant;
 begin
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   TDocVariantData(result).InitArray(Items,JSON_OPTIONS[true]);
 end;
@@ -32617,7 +32700,7 @@ end;
 function _Json(const JSON: RawUTF8; var Value: variant;
   Options: TDocVariantOptions): boolean;
 begin
-  if not(TVarData(Value).VType in VTYPE_STATIC) then
+  if TVarData(Value).VType and VTYPE_STATIC<>0 then
     VarClear(Value);
   if not TDocVariantData(Value).InitJSON(JSON,Options) then begin
     VarClear(Value);
@@ -32822,22 +32905,70 @@ end;
 
 {$ifndef NOVARIANTS}
 
+const ICMP: array[TVariantRelationship] of integer = (0,-1,1,1);
+
 function SortDynArrayVariant(const A,B): integer;
 begin
-  if variant(A)=variant(B) then
-    result := 0 else
-  if variant(A)>variant(B) then
-    result := 1 else
-    result := -1;
+  if TVarData(A).VType=varVariant or varByRef then
+    result := SortDynArrayVariant(TVarData(A).VPointer^,B) else
+  if TVarData(B).VType=varVariant or varByRef then
+    result := SortDynArrayVariant(A,TVarData(B).VPointer^) else
+  if TVarData(A).VType=TVarData(B).VType then
+    case TVarData(A).VType of // optimized value comparison
+    varNull,varEmpty:
+      result := 0;
+    varString: // RawUTF8 most of the time (e.g. from TDocVariant)
+      result := StrComp(TVarData(A).VAny,TVarData(B).VAny);
+    varInteger:
+      result := TVarData(A).VInteger-TVarData(B).VInteger;
+    varInt64:
+      result := TVarData(A).VInt64-TVarData(B).VInt64;
+    varBoolean:
+      if TVarData(A).VBoolean=TVarData(B).VBoolean then
+        result := 0 else
+        result := 1;
+    else result := ICMP[VarCompareValue(variant(A),variant(B))];
+    end else
+    result := ICMP[VarCompareValue(variant(A),variant(B))];
 end;
 
 function SortDynArrayVariantI(const A,B): integer;
-var UA,UB: RawUTF8;
-    wasString: boolean;
+  procedure CompareAsString;
+  var UA,UB: RawUTF8;
+      wasString: boolean;
+  begin
+    VariantToUTF8(variant(A),UA,wasString);
+    VariantToUTF8(variant(B),UB,wasString);
+    result := StrIComp(pointer(UA),pointer(UB));
+  end;
 begin
-  VariantToUTF8(variant(A),UA,wasString);
-  VariantToUTF8(variant(B),UB,wasString);
-  result := StrIComp(pointer(UA),pointer(UB));
+  if TVarData(A).VType=varVariant or varByRef then
+    result := SortDynArrayVariant(TVarData(A).VPointer^,B) else
+  if TVarData(B).VType=varVariant or varByRef then
+    result := SortDynArrayVariant(A,TVarData(B).VPointer^) else
+  if TVarData(A).VType=TVarData(B).VType then
+    case TVarData(A).VType of // optimized value comparison
+    varNull,varEmpty:
+      result := 0;
+    varString: // RawUTF8 most of the time (e.g. from TDocVariant)
+      result := StrIComp(TVarData(A).VAny,TVarData(B).VAny);
+    varInteger:
+      result := TVarData(A).VInteger-TVarData(B).VInteger;
+    varInt64:
+      result := TVarData(A).VInt64-TVarData(B).VInt64;
+    varBoolean:
+      if TVarData(A).VBoolean=TVarData(B).VBoolean then
+        result := 0 else
+        result := 1;
+    else
+      if TVarData(A).VType and VTYPE_STATIC=0 then
+        result := ICMP[VarCompareValue(variant(A),variant(B))] else
+        CompareAsString;
+    end else
+    if (TVarData(A).VType and VTYPE_STATIC=0) and
+       (TVarData(B).VType and VTYPE_STATIC=0) then
+      result := ICMP[VarCompareValue(variant(A),variant(B))] else
+      CompareAsString;
 end;
 
 {$endif}
@@ -43098,7 +43229,7 @@ function TSynTable.Data(aID: integer; RecordBuffer: pointer; RecordBufferLen: In
 begin
   if SynTableVariantType=nil then
     SynTableVariantType := SynRegisterCustomVariantType(TSynTableVariantType);
-  if not(TVarData(result).VType in VTYPE_STATIC) then
+  if TVarData(result).VType and VTYPE_STATIC<>0 then
     VarClear(result);
   with TSynTableData(result) do begin
     VType := SynTableVariantType.VarType;

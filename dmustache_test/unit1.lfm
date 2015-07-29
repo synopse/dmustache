@@ -1,0 +1,103 @@
+object FDMustacheTest: TFDMustacheTest
+  Left = 299
+  Height = 271
+  Top = 113
+  Width = 517
+  Caption = 'dmustache test'
+  ClientHeight = 271
+  ClientWidth = 517
+  Position = poDefault
+  LCLVersion = '1.4.2.0'
+  object LEMustachedLine: TLabeledEdit
+    Left = 24
+    Height = 27
+    Top = 128
+    Width = 464
+    EditLabel.AnchorSideLeft.Control = LEMustachedLine
+    EditLabel.AnchorSideRight.Control = LEMustachedLine
+    EditLabel.AnchorSideRight.Side = asrBottom
+    EditLabel.AnchorSideBottom.Control = LEMustachedLine
+    EditLabel.Left = 24
+    EditLabel.Height = 17
+    EditLabel.Top = 108
+    EditLabel.Width = 464
+    EditLabel.Caption = '&Mustached line: (The template)'
+    EditLabel.ParentColor = False
+    TabOrder = 0
+    Text = 'Hello {{name}}! You have just won {{value}} dollars!'
+  end
+  object BtnRender: TButton
+    Left = 24
+    Height = 25
+    Top = 168
+    Width = 465
+    Caption = '-> &Render the template with those datas'
+    OnClick = BtnRenderClick
+    TabOrder = 1
+  end
+  object GBContext: TGroupBox
+    Left = 24
+    Height = 81
+    Top = 16
+    Width = 465
+    Caption = 'Context data:'
+    ClientHeight = 62
+    ClientWidth = 461
+    TabOrder = 2
+    object LEContext1: TLabeledEdit
+      Left = 11
+      Height = 27
+      Top = 21
+      Width = 213
+      EditLabel.AnchorSideLeft.Control = LEContext1
+      EditLabel.AnchorSideRight.Control = LEContext1
+      EditLabel.AnchorSideRight.Side = asrBottom
+      EditLabel.AnchorSideBottom.Control = LEContext1
+      EditLabel.Left = 11
+      EditLabel.Height = 17
+      EditLabel.Top = 1
+      EditLabel.Width = 213
+      EditLabel.Caption = 'Data1: {{name}}'
+      EditLabel.ParentColor = False
+      TabOrder = 0
+      Text = 'Chris'
+    end
+    object LEContext2: TLabeledEdit
+      Left = 240
+      Height = 27
+      Top = 21
+      Width = 208
+      EditLabel.AnchorSideLeft.Control = LEContext2
+      EditLabel.AnchorSideRight.Control = LEContext2
+      EditLabel.AnchorSideRight.Side = asrBottom
+      EditLabel.AnchorSideBottom.Control = LEContext2
+      EditLabel.Left = 240
+      EditLabel.Height = 17
+      EditLabel.Top = 1
+      EditLabel.Width = 208
+      EditLabel.Caption = 'Data2: {{value}}'
+      EditLabel.ParentColor = False
+      TabOrder = 1
+      Text = '10000'
+    end
+  end
+  object LEHtmlResult: TLabeledEdit
+    Left = 24
+    Height = 27
+    Top = 224
+    Width = 464
+    Color = clCream
+    EditLabel.AnchorSideLeft.Control = LEHtmlResult
+    EditLabel.AnchorSideRight.Control = LEHtmlResult
+    EditLabel.AnchorSideRight.Side = asrBottom
+    EditLabel.AnchorSideBottom.Control = LEHtmlResult
+    EditLabel.Left = 24
+    EditLabel.Height = 17
+    EditLabel.Top = 204
+    EditLabel.Width = 464
+    EditLabel.Caption = 'Html Result:'
+    EditLabel.ParentColor = False
+    ReadOnly = True
+    TabOrder = 3
+  end
+end

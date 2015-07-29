@@ -1,3 +1,10 @@
+# Ignored
+dmustache_test/dmustachetest
+dmustache_test/dmustachetest.lps
+dmustache_test/dmustachetest.res
+dmustache_test/lib/
+dmustache_test/screenshots/
+
 #################
 ## Eclipse
 #################

@@ -1,4 +1,4 @@
-`SynMustache` is a Delphi implementation of the [Mustache template language](http://mustache.github.com/).
+`SynMustache` is a Delphi and freepascal / Lazarus implementation of the [Mustache template language](http://mustache.github.com/).
 
 
 Presentation
@@ -35,6 +35,8 @@ In fact, this repository is a miror of the following files extracted from our [S
   * `SynLz.pas`
   * `Synopse.inc`
   * `SynopseCommit.inc`
+  * `SynFPCLinux.pas`
+  * `SynFPCTypInfo.pas`
 
 Note that even if `SynMustache` is part of the [mORMot Open Source framework](http://mormot.net/), it is just one brick of it, so you can use this unit with any of your projects, without the need to use either the database, ORM, SOA or other features of *mORMot*.
 

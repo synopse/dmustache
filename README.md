@@ -1,9 +1,10 @@
 `SynMustache` is a Delphi implementation of the [Mustache template language](http://mustache.github.com/).
 
+
 Presentation
 ============
 
-  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to XE8;
+  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to XE8 (and FPC/Lazarus compilation);
   * It has a separate parser and renderer (so you can compile your templates ahead of time);
   * The parser features a shared cache of compiled templates;
   * It [passes all official Mustache specification tests](https://github.com/mustache/spec) - including all weird whitespace process;
@@ -11,6 +12,7 @@ Presentation
   * `{{.}}`, `{{-index}}` and `{{"some text}}` pseudo-variables were added to the standard Mustache syntax;
   * `{{#-first}}`, `{{#-last}}` and `{{#-odd}}` pseudo-sections were added to the standard Mustache syntax;
   * `{{helperName value}}` *Expression Helpers* were added to the standard Mustache syntax;
+  * `{{if value<=>value}}` *Expression Helper* for conditional sections;
   * Internal partials can be defined via `{{<partial}}` - also a nice addition to the standard Mustache syntax;
   * It allows the data context to be supplied as JSON or our `TDocVariant` custom variant type;
   * Almost no memory allocation is performed during the rendering;
@@ -35,6 +37,9 @@ In fact, this repository is a miror of the following files extracted from our [S
   * `SynopseCommit.inc`
 
 Note that even if `SynMustache` is part of the [mORMot Open Source framework](http://mormot.net/), it is just one brick of it, so you can use this unit with any of your projects, without the need to use either the database, ORM, SOA or other features of *mORMot*.
+
+If you download the whole *mORMot* source code, you do not need this separate package: ensure you get rid of any existing separated `SynMustache` installation, and use the units as available in the main *mORMot* trunk.
+This *DMustache* distribution/GitHub account targets only people needing an optimized *Mustache* template, without other *mORMot* features.
 
 License
 =======

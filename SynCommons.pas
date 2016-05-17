@@ -1946,6 +1946,11 @@ function VariantToInt64Def(const V: Variant; DefaultValue: Int64): Int64;
 /// convert any numerical Variant into a floating point value
 function VariantToDouble(const V: Variant; var Value: double): boolean;
 
+/// convert any date/time Variant into a TDateTime value
+// - would handle varDate kind of variant, or use a string conversion and
+// ISO-8601 parsing if possible
+function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
+
 /// convert any numerical Variant into a fixed decimals floating point value
 function VariantToCurrency(const V: Variant; var Value: currency): boolean;
 
@@ -11394,7 +11399,7 @@ procedure PatchCode(Old,New: pointer; Size: integer; Backup: pointer=nil;
 procedure PatchCodePtrUInt(Code: PPtrUInt; Value: PtrUInt;
   LeaveUnprotected: boolean=false);
 
-{$ifndef CPUARM}
+{$ifdef CPUINTEL}
 type
   /// small memory buffer used to backup a RedirectCode() redirection hook
   TPatchCode = array[0..4] of byte;
@@ -11408,7 +11413,7 @@ procedure RedirectCode(Func, RedirectFunc: Pointer; Backup: PPatchCode=nil);
 
 /// self-modifying code - restore a code from its RedirectCode() backup
 procedure RedirectCodeRestore(Func: pointer; const Backup: TPatchCode);
-{$endif CPUARM}
+{$endif CPUINTEL}
 
 /// allow to fix TEvent.WaitFor() method for Kylix
 // - under Windows or with FPC, will call original TEvent.WaitFor() method
@@ -15521,10 +15526,10 @@ type
     fIdentifier: TSynUniqueIdentifierProcess;
     fIdentifierShifted: cardinal;
     fLastCounter: cardinal;
-    fCrypto: array[0..7] of cardinal;
+    fCrypto: array[0..7] of cardinal; // only fCrypto[6..7] are used in practice
     fCryptoCRC: cardinal;
     fSafe: TSynLocker;
-    function GetComputedCount: integer;
+    function GetComputedCount: Int64;
   public
     /// initialize the generator for the given 16-bit process identifier
     // - you can supply an obfuscation key, which should be shared for the
@@ -15549,7 +15554,8 @@ type
     // - cyphering includes simple key-based encryption and a CRC-32 digital signature
     function ToObfuscated(const aIdentifier: TSynUniqueIdentifier): TSynUniqueIdentifierObfuscated;
     /// retrieve a TSynUniqueIdentifier from 24 chars cyphered hexadecimal text
-    // - any file extension (e.g. '.jpeg') woul dbe first
+    // - any file extension (e.g. '.jpeg') would be first deleted from the
+    // supplied obfuscated text
     // - returns true if the supplied obfuscated text has the expected layout
     // and a valid digital signature
     // - returns false if the supplied obfuscated text is invalid
@@ -15559,7 +15565,7 @@ type
     /// the process identifier, associated with this generator
     property Identifier: TSynUniqueIdentifierProcess read fIdentifier;
     /// how many times ComputeNew method has been called
-    property ComputedCount: integer read GetComputedCount;
+    property ComputedCount: Int64 read GetComputedCount;
   end;
   
 
@@ -18168,31 +18174,7 @@ end;
 {$endif PUREPASCAL}
 
 function StrUInt32(P: PAnsiChar; val: PtrUInt): PAnsiChar;
-{$ifdef CPU64}
-{$ifdef FPC}
-var c100: PtrUInt;
-begin // fallback to pure pascal version, since asm version below make GPFs for FPC
-  repeat
-    if val<10 then begin
-      dec(P);
-      P^ := AnsiChar(val+ord('0'));
-      break;
-    end else
-    if val<100 then begin
-      dec(P,2);
-      PWord(P)^ := TwoDigitLookupW[val];
-      break;
-    end;
-    dec(P,2);
-    c100 := val div 100; // FPC will use power of 2 reciprocal here :)
-    dec(val,c100*100);
-    PWord(P)^ := TwoDigitLookupW[val];
-    val := c100;
-    if c100=0 then break;
-  until false;
-  result := P;
-end;
-{$else}
+{$ifdef CPUX64}
 {$ifdef FPC}nostackframe; assembler;
 asm
 {$else}
@@ -18205,7 +18187,7 @@ asm // rcx=P, rdx=val (Linux: rdi,rsi)
     {$endif win64}
     cmp rdx,10; jb @3           // direct process of common val<10
     mov rax,rdx
-    lea r8,TwoDigitLookup
+    lea r8, [rip+TwoDigitLookup]
 @s: cmp rax,100
     lea rcx,[rcx-2]
     jb @2
@@ -18234,7 +18216,6 @@ asm // rcx=P, rdx=val (Linux: rdi,rsi)
     or dl,'0'
     mov [rax],dl
 end;
-{$endif FPC}
 {$else}
 {$ifdef PUREPASCAL}
 var c100: cardinal;
@@ -18527,11 +18508,7 @@ type
   end;
 
   /// map the Delphi/FPC dynamic array header (stored before each instance)
-  TDynArrayRec =
-    {$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}
-    packed
-    {$endif FPC_REQUIRES_PROPER_ALIGNMENT}
-    record
+  TDynArrayRec = packed record
     /// dynamic array reference count (basic garbage memory mechanism)
     {$ifdef FPC}
     refCnt: PtrInt;
@@ -18564,9 +18541,9 @@ type
 
   /// map the Delphi/FPC record field RTTI
   TFieldInfo =
-    //{$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}
+    {$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}
     packed
-    //{$endif FPC_REQUIRES_PROPER_ALIGNMENT}
+    {$endif FPC_REQUIRES_PROPER_ALIGNMENT}
     record
     TypeInfo: PTypeInfoStored;
     {$ifdef FPC}
@@ -18628,9 +18605,15 @@ type
       dimCount: Byte;
       dims: array[0..255 {DimCount-1}] of PTypeInfoStored;
     );
-    tkRecord{$ifdef FPC},tkObject{$endif}: (
+    {$ifdef FPC}
+    tkRecord, tkObject:(
+      recSize: longint;
+      ManagedCount: longint;
+    {$else}
+    tkRecord: (
       recSize: cardinal;
       ManagedCount: integer;
+    {$endif FPC}
       ManagedFields: array[0..0] of TFieldInfo;
       {$ifdef ISDELPHI2010} // enhanced RTTI containing info about all fields
       NumOps: Byte;
@@ -18641,9 +18624,19 @@ type
     );
     tkEnumeration: (
       EnumType: TOrdType;
+      {$ifdef FPC_ENUMHASINNER}
+      inner:
+      {$ifndef FPC_REQUIRES_PROPER_ALIGNMENT}
+      packed
+      {$endif}
+      record
+      {$endif}
       MinValue: longint;
       MaxValue: longint;
       EnumBaseType: PTypeInfoStored;
+      {$ifdef FPC_ENUMHASINNER}
+      end;
+      {$endif}
       NameList: string[255];
     );
     tkInteger: (
@@ -18873,10 +18866,10 @@ begin
   info := GetTypeInfo(aTypeInfo,tkEnumeration);
   if info<>nil then begin
     {$ifdef FPC}
-    if info^.EnumBaseType<>nil then
+    if info^.{$ifdef FPC_ENUMHASINNER}inner.{$endif}EnumBaseType<>nil then
     {$endif}
-      info := GetTypeInfo(info^.EnumBaseType{$ifndef FPC}^{$endif},tkEnumeration);
-    MaxValue := info^.MaxValue;
+      info := GetTypeInfo(info^.{$ifdef FPC_ENUMHASINNER}inner.{$endif}EnumBaseType{$ifndef FPC}^{$endif},tkEnumeration);
+    MaxValue := info^.{$ifdef FPC_ENUMHASINNER}inner.{$endif}MaxValue;
     Names := @info.NameList;
     result := true;
   end else
@@ -19155,6 +19148,36 @@ begin
     if SetVariantUnRefSimpleValue(V,tmp) then
       result := VariantToDouble(variant(tmp),Value) else
       result := false;
+  end;
+end;
+
+function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
+var tmp: RawUTF8;
+    vd: TVarData;
+begin
+  with TVarData(V) do
+  if VType=varVariant or varByRef then
+    result := VariantToDateTime(PVariant(VPointer)^,Value) else
+  case VType of
+  varDouble,varDate: begin
+    Value := VDouble;
+    result := true;
+  end;
+  varSingle: begin
+    Value := VSingle;
+    result := true;
+  end;
+  varCurrency: begin
+    Value := VCurrency;
+    result := true;
+  end else
+    if SetVariantUnRefSimpleValue(V,vd) then
+      result := VariantToDateTime(variant(vd),Value) else
+    if VariantToUTF8(V,tmp) then begin
+      Iso8601ToDateTimePUTF8CharVar(pointer(tmp),length(tmp),Value);
+      result := Value<>0;
+    end else
+    result := false;
   end;
 end;
 
@@ -19598,7 +19621,14 @@ end;
 
 {$endif UNICODE}
 
-{$ifdef CPU64}
+{$ifdef PUREPASCAL}
+function bswap32(a: cardinal): cardinal; {$ifdef HASINLINE}inline;{$endif}
+begin
+  result := ((a and $ff)shl 24)or((a and $ff00)shl 8)or
+            ((a and $ff0000)shr 8)or((a and $ff000000)shr 24);
+end;
+{$else}
+{$ifdef CPUX64}
 function bswap32(a: cardinal): cardinal;
 {$ifdef FPC}nostackframe; assembler;
 asm
@@ -19613,20 +19643,14 @@ asm
   {$endif win64} 
   bswap eax
 end;
-{$else}
-{$ifdef PUREPASCAL}
-function bswap32(a: cardinal): cardinal; {$ifdef HASINLINE}inline;{$endif}
-begin
-  result := ((a and $ff)shl 24)or((a and $ff00)shl 8)or
-            ((a and $ff0000)shr 8)or((a and $ff000000)shr 24);
-end;
-{$else}
+{$endif CPUX64}
+{$ifdef CPUX86}
 function bswap32(a: cardinal): cardinal;
 asm
   bswap eax
 end;
-{$endif}
-{$endif CPU64}
+{$endif CPUX86}
+{$endif PUREPASCAL}
 
 {$ifndef PUREPASCAL} { these functions are implemented in asm }
 {$ifndef LVCL}       { don't define these functions twice }
@@ -31403,7 +31427,7 @@ begin
   PatchCode(Code,@Value,SizeOf(Code^),nil,LeaveUnprotected);
 end;
 
-{$ifndef CPUARM}
+{$ifdef CPUINTEL}
 
 procedure RedirectCode(Func, RedirectFunc: Pointer; Backup: PPatchCode=nil);
 var NewJump: packed record
@@ -31427,7 +31451,7 @@ begin
   PatchCode(Func,@Backup,sizeof(TPatchCode));
 end;
 
-{$endif CPUARM}
+{$endif CPUINTEL}
 
 
 {$ifndef LVCL}
@@ -31937,7 +31961,8 @@ begin
     {$endif}
     tkArray:
       with GetTypeInfo(typeInfo,tkArray)^ do
-        result := (arraySize and $7FFFFFFF) * ElCount;
+        result := arraySize;
+        //result := (arraySize and $7FFFFFFF) * ElCount; // to be validated
     tkObject,tkRecord:
       result := GetTypeInfo(typeInfo,PTypeKind(typeInfo)^)^.recSize;
   else
@@ -33141,8 +33166,8 @@ end;
 function StrLenSSE2(S: pointer): PtrInt;
 asm // from GPL strlen64.asm by Agner Fog - www.agner.org/optimize
         .NOFRAME
+        test     rcx,rcx
         mov      rax,rcx             // get pointer to string from rcx
-        or       rax,rax
         mov      r8,rcx              // copy pointer
         jz       @null               // returns 0 if S=nil
         // rax = s,ecx = 32 bits of s
@@ -33171,6 +33196,28 @@ asm // from GPL strlen64.asm by Agner Fog - www.agner.org/optimize
         add      rax,rdx             // add byte index
 @null:
 end;
+
+const
+  EQUAL_EACH = 8;   // see https://msdn.microsoft.com/en-us/library/bb531463
+  NEGATIVE_POLARITY = 16;
+
+{$ifdef HASAESNI}
+function StrLenSSE42(S: pointer): PtrInt;
+asm // rcx=S
+        .NOFRAME
+        test      rcx,rcx
+        mov       rdx,rcx
+        mov       rax,-16
+        jz        @null
+        pxor      xmm0,xmm0
+@L:     add       rax,16   // add before comparison flag
+        pcmpistri xmm0,[rdx+rax],EQUAL_EACH
+        jnz       @L
+        add       rax,rcx
+        ret
+@null:  xor       rax,rax
+end;
+{$endif}
 
 {$else CPU64}
 
@@ -33500,7 +33547,11 @@ begin
   MoveFast := @MoveX87;
   {$else}
   {$ifdef CPU64}
-  StrLen := @StrLenSSE2;
+  {$ifdef HASAESNI}
+    if cfSSE42 in CpuFeatures then
+      StrLen := @StrLenSSE42 else
+  {$endif}
+      StrLen := @StrLenSSE2;
   FillcharFast := @FillCharSSE2;
   //MoveFast := @MoveSSE2; // actually slower than RTL's for small blocks
   {$else}
@@ -33987,7 +34038,7 @@ begin
           '%.Create("%") supports only one dimension static array)',
           [self,fCustomTypeName]);
       fKnownType := ktStaticArray;
-      fDataSize := info^.arraySize {$ifdef FPC}and $7FFFFFFF{$endif};
+      fDataSize := info^.arraySize;
       fFixedSize := fDataSize div info^.elCount;
       fNestedArray := TJSONCustomParserRTTI.CreateFromRTTI(
         '',info^.arrayType{$ifndef FPC}^{$endif},fFixedSize);
@@ -39452,6 +39503,7 @@ begin
         GetJSONPropName(P,name);
         if (name[0]=#0) or (name[0]>#200) then
           break;
+        if P^ in [#1..' '] then repeat inc(P) until not(P^ in [#1..' ']);
         if PropNameLen=0 then begin
           name[ord(name[0])+1] := #0; // make ASCIIZ
           if IdemPChar(@name[1],PropNameUpper) then begin
@@ -42120,7 +42172,8 @@ begin
   if (Index>=0) and (Index<=PaddingMaxUsedIndex) then
     try
       EnterCriticalSection(fSection);
-      result := VariantToInt64Def(variant(Padding[index]),0);
+      if not VariantToInt64(variant(Padding[index]),result) then
+        result := 0;
     finally
       LeaveCriticalSection(fSection);
     end else
@@ -42207,11 +42260,10 @@ begin
   if cardinal(Index)<=high(Padding) then
     try
       EnterCriticalSection(fSection);
+      result := 0;
       if Index<=PaddingMaxUsedIndex then
-        result := VariantToInt64Def(variant(Padding[index]),0) else begin
+        VariantToInt64(variant(Padding[index]),result) else
         PaddingMaxUsedIndex := Index;
-        result := 0;
-      end;
       variant(Padding[Index]) := Int64(result+Increment);
     finally
       LeaveCriticalSection(fSection);
@@ -45596,6 +45648,8 @@ function GotoEndJSONItem(P: PUTF8Char): PUTF8Char;
 label next;
 begin
   result := nil; // to notify unexpected end
+  if P=nil then
+    exit;
   if P^ in [#1..' '] then repeat inc(P) until not(P^ in [#1..' ']);
   // get a field
   case P^ of
@@ -45627,6 +45681,8 @@ procedure GetJSONItemAsRawJSON(var P: PUTF8Char; var result: RawJSON; EndOfObjec
 var B: PUTF8Char;
 begin
   result := '';
+  if P=nil then
+    exit;
   B := P;
   P := GotoEndJSONItem(B);
   if P=nil then
@@ -54796,7 +54852,7 @@ procedure TSynUniqueIdentifierGenerator.ComputeNew(
   out result: TSynUniqueIdentifierBits);
 var tix, currentTime: cardinal;
 begin
-  tix := GetTickCount64 shr 8;
+  tix := GetTickCount64 shr 8; // retrieve time every 256 ms
   fSafe.Lock;
   try
     if tix<>fLastTix then begin
@@ -54825,10 +54881,12 @@ begin
   ComputeNew(PSynUniqueIdentifierBits(@result)^);
 end;
 
-function TSynUniqueIdentifierGenerator.GetComputedCount: integer;
+function TSynUniqueIdentifierGenerator.GetComputedCount: Int64;
 begin
   {$ifdef NOVARIANTS}
-  result := fSafe.Padding[SYNUNIQUEGEN_COMPUTECOUNT].VInteger;
+  fSafe.Lock;
+  result := fSafe.Padding[SYNUNIQUEGEN_COMPUTECOUNT].VInt64;
+  fSafe.Unlock;
   {$else}
   result := fSafe.LockedInt64[SYNUNIQUEGEN_COMPUTECOUNT];
   {$endif}
@@ -54853,23 +54911,28 @@ var i, len: integer;
 begin
   fIdentifier := aIdentifier;
   fIdentifierShifted := aIdentifier shl 15;
-  len := length(aSharedObfuscationKey);
-  crc := crc32ctab[0,len and 1023];
-  for i := 0 to high(fCrypto)+1 do begin
-    crc := crc32ctab[0,crc and 1023] xor crc32ctab[3,i] xor 
-           kr32(crc,pointer(aSharedObfuscationKey),len) xor
-           crc32c(crc,pointer(aSharedObfuscationKey),len) xor
-           fnv32(crc,pointer(aSharedObfuscationKey),len);
-    if i<=high(fCrypto) then
-      fCrypto[i] := crc else // naive but good enough in practice
-      fCryptoCRC := crc;
-  end;
   fSafe.Init;
   {$ifdef NOVARIANTS}
   variant(fSafe.Padding[SYNUNIQUEGEN_COMPUTECOUNT]) := 0;
   {$else}
   fSafe.LockedInt64[SYNUNIQUEGEN_COMPUTECOUNT] := 0;
   {$endif}
+  // compute obfuscation key using hash diffusion of the supplied text
+  len := length(aSharedObfuscationKey);
+  crc := crc32ctab[0,len and 1023];
+  for i := 0 to high(fCrypto)+1 do begin
+    crc := crc32ctab[0,crc and 1023] xor crc32ctab[3,i] xor
+           kr32(crc,pointer(aSharedObfuscationKey),len) xor
+           crc32c(crc,pointer(aSharedObfuscationKey),len) xor
+           fnv32(crc,pointer(aSharedObfuscationKey),len);
+    if i<=high(fCrypto) then
+      fCrypto[i] := crc else
+      fCryptoCRC := crc;
+  end;
+  // due to the weakness of the hash algorithms used, this approach is a bit
+  // naive and would be broken easily with brute force - but point here is to
+  // hide/obfuscate public values at end-user level (e.g. when publishing URIs),
+  // not implement strong security, so it sounds good enough for our purpose 
 end;
 
 destructor TSynUniqueIdentifierGenerator.Destroy;
@@ -55812,7 +55875,8 @@ begin
   JSON_CONTENT_TYPE_HEADER_VAR := JSON_CONTENT_TYPE_HEADER;
   {$ifdef FPC}
   {$ifdef ISFPC27}
-  DefaultSystemCodepage := CODEPAGE_US;
+  SetMultiByteConversionCodePage(CP_UTF8);
+  SetMultiByteRTLFileSystemCodePage(CP_UTF8);
   {$endif}
   {$endif FPC}
   {$ifdef KYLIX3}

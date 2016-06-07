@@ -1440,6 +1440,47 @@ type
     tmp: array[0..4095] of AnsiChar;
   end;
 
+  /// implements a stack-based writable storage of binary content
+  // - memory allocation is performed via a TSynTempBuffer
+  {$ifdef UNICODE}
+  TSynTempWriter = record
+  {$else}
+  TSynTempWriter = object
+  {$endif}
+  private
+    tmp: TSynTempBuffer;
+  public
+    /// the current writable position in tmp.buf
+    pos: PAnsiChar;
+    /// initialize a new temporary buffer of a given number of bytes
+    // - if maxsize is left to its 0 default value, the default stack-allocated
+    // memory size is used, i.e. 4 KB
+    procedure Init(maxsize: integer=0);
+    /// finalize the temporary storage
+    procedure Done;
+    /// append some binary to the internal buffer
+    // - would raise an ESynException in case of potential overflow
+    procedure wr(const val; len: integer);
+    /// append some shortstring as binary to the internal buffer
+    procedure wrss(const str: shortstring);
+    /// append some 8-bit value as binary to the internal buffer
+    procedure wrb(b: byte);
+    /// append some 16-bit value as binary to the internal buffer
+    procedure wrw(w: word);
+    /// append some 32-bit value as binary to the internal buffer
+    procedure wrint(int: integer);
+    /// append some 32-bit/64-bit pointer value as binary to the internal buffer
+    procedure wrptr(ptr: pointer);
+    /// append some 32-bit/64-bit integer as binary to the internal buffer
+    procedure wrptrint(int: PtrInt);
+    /// append some fixed-value bytes as binary to the internal buffer
+    // - returns a pointer to the first byte of the added memory chunk
+    function wrfillchar(count: integer; value: byte): PAnsiChar;
+    /// returns the current offset position in the internal buffer
+    function Position: integer;
+    /// returns the buffer as a RawByteString instance
+    function AsBinary: RawByteString;
+  end;
 
 var
   /// global TSynAnsiConvert instance to handle WinAnsi encoding (code page 1252)
@@ -1701,6 +1742,13 @@ function UTF8ToWideChar(dest: PWideChar; source: PUTF8Char; MaxDestChars, source
 // - faster than System.UTF8ToUnicode with dest=nil
 function Utf8ToUnicodeLength(source: PUTF8Char): PtrUInt;
 
+/// returns TRUE if the supplied buffer has valid UTF-8 encoding
+function IsValidUTF8(source: PUTF8Char): Boolean;
+
+/// returns TRUE if the supplied buffer has valid UTF-8 encoding with no #1..#31
+// control characters
+function IsValidUTF8WithoutControlChars(source: PUTF8Char): Boolean;
+
 /// will truncate the supplied UTF-8 value if its length exceeds the specified
 // UTF-16 Unicode characters count
 // - count may not match the UCS4 glyphs number, in case of UTF-16 surrogates
@@ -1895,6 +1943,11 @@ procedure VariantToUTF8(const V: Variant; var result: RawUTF8;
 // - custom variant types will be stored as JSON
 function VariantToUTF8(const V: Variant; var Text: RawUTF8): boolean; overload;
 
+/// convert any date/time Variant into a TDateTime value
+// - would handle varDate kind of variant, or use a string conversion and
+// ISO-8601 parsing if possible
+function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
+
 /// fast comparison of a Variant and UTF-8 encoded String
 // - slightly faster than plain V=Str, which computes a temporary variant
 function VariantEquals(const V: Variant; const Str: RawUTF8): boolean; overload;
@@ -1945,11 +1998,6 @@ function VariantToInt64Def(const V: Variant; DefaultValue: Int64): Int64;
 
 /// convert any numerical Variant into a floating point value
 function VariantToDouble(const V: Variant; var Value: double): boolean;
-
-/// convert any date/time Variant into a TDateTime value
-// - would handle varDate kind of variant, or use a string conversion and
-// ISO-8601 parsing if possible
-function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
 
 /// convert any numerical Variant into a fixed decimals floating point value
 function VariantToCurrency(const V: Variant; var Value: currency): boolean;
@@ -2386,6 +2434,10 @@ function StrUInt64(P: PAnsiChar; const val: QWord): PAnsiChar;
 // - faster than SetString(tmp,Buffer,BufferLen); Text := Text+tmp;
 procedure AppendBufferToRawUTF8(var Text: RawUTF8; Buffer: pointer; BufferLen: PtrInt);
 
+/// fast add one character to a RawUTF8 string
+// - faster than Text := Text + ch;
+procedure AppendCharToRawUTF8(var Text: RawUTF8; Ch: AnsiChar);
+
 /// fast add some characters to a RawUTF8 string
 // - faster than Text := Text+RawUTF8(Buffers[0])+RawUTF8(Buffers[0])+...
 procedure AppendBuffersToRawUTF8(var Text: RawUTF8; const Buffers: array of PUTF8Char);
@@ -2443,11 +2495,11 @@ var FillcharFast: procedure(var Dest; count: PtrInt; Value: byte) = System.FillC
 {$else}
 
 /// our fast version of StrLen(), to be used with PUTF8Char/PAnsiChar
-// - this version will use fast SSE2 instructions (if available), on both Win32
-// and Win64 platforms: please note that in this case, it may read up to 15 bytes
-// before or beyond the string; this is rarely a problem but it can in principle
-// generate a protection violation (e.g. when used over mapped files) - in this
-// case, you can use the slightly slower StrLenPas() function instead
+// - this version will use fast SSE2/SSE4.2 instructions (if available), on both
+// Win32 and Win64 platforms: please note that in this case, it may read up to
+// 15 bytes before or beyond the string; this is rarely a problem but it can in
+// principle generate a protection violation (e.g. when used over mapped files):
+// you can use the slightly slower StrLenPas() function instead with such input
 var StrLen: function(S: pointer): PtrInt = StrLenPas;
 
 /// our fast version of FillChar()
@@ -2750,7 +2802,7 @@ function IdemPropNameU(const P1: RawUTF8; P2: PUTF8Char; P2Len: integer): boolea
 // - if P1 and P2 are RawUTF8, you should better call overloaded function
 // IdemPropNameU(const P1,P2: RawUTF8), which would be slightly faster by
 // using the length stored before the actual text buffer of each RawUTF8
-function IdemPropNameUSameLen(P1,P2: PUTF8Char; P1P2Len: integer): boolean; 
+function IdemPropNameUSameLen(P1,P2: PUTF8Char; P1P2Len: integer): boolean;
   {$ifdef PUREPASCAL}{$ifdef HASINLINE}inline;{$endif}{$endif}
 
 /// case unsensitive test of P1 and P2 content
@@ -7988,6 +8040,9 @@ type
     /// store a new RawUTF8 item
     // - returns -1 and raise no exception in case of self=nil
     function Add(const aText: RawUTF8): PtrInt; {$ifdef HASINLINE}inline;{$endif}
+    /// store a new RawUTF8 item if not already in the list
+    // - returns -1 and raise no exception in case of self=nil
+    function AddIfNotExisting(const aText: RawUTF8; wasAdded: PBoolean=nil): PtrInt; virtual;
     /// store a new RawUTF8 item, and its associated TObject
     // - returns -1 and raise no exception in case of self=nil
     function AddObject(const aText: RawUTF8; aObject: TObject): PtrInt;
@@ -8098,10 +8153,16 @@ type
     // use rather the AddObjectIfNotExisting() method which would preserve
     // the internal hash array, so would perform better
     function IndexOf(const aText: RawUTF8): PtrInt; override;
+    /// store a new RawUTF8 item if not already in the list
+    // - returns -1 and raise no exception in case of self=nil
+    // - this overridden method will update and use the internal hash table,
+    // so is preferred to plain Add if you want faster insertion
+    // into the TRawUTF8ListHashed
+    function AddIfNotExisting(const aText: RawUTF8; wasAdded: PBoolean=nil): PtrInt; override;
     /// store a new RawUTF8 item if not already in the list, and its associated TObject
     // - returns -1 and raise no exception in case of self=nil
     // - this overridden method will update and use the internal hash table,
-    // so is preferred to plain Add/AddObject if you want faster insertion
+    // so is preferred to plain Add if you want faster insertion
     // into the TRawUTF8ListHashed
     function AddObjectIfNotExisting(const aText: RawUTF8; aObject: TObject;
       wasAdded: PBoolean=nil): PtrInt; override;
@@ -8127,32 +8188,35 @@ type
     // - use Safe.Lock/TryLock with a try ... finally Safe.Unlock block
     property Safe: TSynLocker read fSafe;
     /// add a RawUTF8 item in the stored Strings[] list
-    // - just a wrapper over Add() using Safe.Lock/Unloack
+    // - just a wrapper over Add() using Safe.Lock/Unlock
     // - warning: this method WON'T update the internal hash array: use
-    // AddObjectIfNotExisting() method instead 
+    // AddIfNotExisting/AddObjectIfNotExisting() methods instead 
     function LockedAdd(const aText: RawUTF8): PtrInt; virtual; 
     /// find a RawUTF8 item in the stored Strings[] list
-    // - just a wrapper over IndexOf() using Safe.Lock/Unloack
+    // - just a wrapper over IndexOf() using Safe.Lock/Unlock
     function IndexOf(const aText: RawUTF8): PtrInt; override;
     /// find a RawUTF8 item in the stored Strings[] list
-    // - just a wrapper over GetObjectByName() using Safe.Lock/Unloack
+    // - just a wrapper over GetObjectByName() using Safe.Lock/Unlock
     // - warning: the object instance should remain in the list, so the caller
     // should not make any Delete/LockedDeleteFromName otherwise a GPF may occur
     function LockedGetObjectByName(const aText: RawUTF8): TObject; virtual;
+    /// add a RawUTF8 item in the internal storage
+    // - just a wrapper over AddIfNotExisting() using Safe.Lock/Unlock
+    function AddIfNotExisting(const aText: RawUTF8; wasAdded: PBoolean=nil): PtrInt; override;
     /// add a RawUTF8 item in the internal storage, with an optional object
-    // - just a wrapper over AddObjectIfNotExisting() using Safe.Lock/Unloack
+    // - just a wrapper over AddObjectIfNotExisting() using Safe.Lock/Unlock
     function AddObjectIfNotExisting(const aText: RawUTF8; aObject: TObject;
       wasAdded: PBoolean=nil): PtrInt; override;
     /// find and delete an RawUTF8 item in the stored Strings[] list
-    // - just a wrapper over inherited DeleteFromName() using Safe.Lock/Unloack
+    // - just a wrapper over inherited DeleteFromName() using Safe.Lock/Unlock
     function DeleteFromName(const aText: RawUTF8): PtrInt; override;
     /// retrieve and delete the first RawUTF8 item in the list
     // - could be used as a FIFO
-    // - just a wrapper over inherited PopFirst() using Safe.Lock/Unloack
+    // - just a wrapper over inherited PopFirst() using Safe.Lock/Unlock
     function PopFirst(out aText: RawUTF8; aObject: PObject=nil): boolean; override;
     /// retrieve and delete the last RawUTF8 item in the list
     // - could be used as a FILO
-    // - just a wrapper over inherited PopLast() using Safe.Lock/Unloack
+    // - just a wrapper over inherited PopLast() using Safe.Lock/Unlock
     function PopLast(out aText: RawUTF8; aObject: PObject=nil): boolean; override;
   end;
 
@@ -8566,7 +8630,9 @@ type
     constructor Create(aStream: TStream; BufLen: integer=65536); overload;
     /// initialize the buffer, and specify a file to use for writing
     // - use an internal buffer of the specified size
-    constructor Create(const aFileName: TFileName; BufLen: integer=65536); overload;
+    // - would replace any existing file by default, unless Append is TRUE
+    constructor Create(const aFileName: TFileName; BufLen: integer=65536;
+      Append: boolean=false); overload;
     /// initialize the buffer, using an internal TStream instance
     // - parameter could be e.g. THeapMemoryStream or TRawByteStringStream
     // - use Flush then TMemoryStream(Stream) to retrieve its content, or
@@ -9933,7 +9999,7 @@ function ExtractInlineParameters(const SQL: RawUTF8;
 
 
 /// add the 4 digits of integer Y to P^
-procedure YearToPChar(Y: Word; P: PUTF8Char);
+procedure YearToPChar(Y: cardinal; P: PUTF8Char);
   {$ifdef PUREPASCAL} {$ifdef HASINLINE}inline;{$endif} {$endif}
 
 /// creates a 3 digits string from a 0..999 value
@@ -10018,20 +10084,32 @@ var
 // - crc32cfast() is 1.7 GB/s, crc32csse42() is 3.7 GB/s
 function crc32cfast(crc: cardinal; buf: PAnsiChar; len: cardinal): cardinal;
 
-{$ifdef CPUINTEL}
-var
-  /// the available CPU features, as recognized at program startup
-  CpuFeatures: set of
+type
+  /// the potential features, retrieved from an Intel CPU
+  // - see https://en.wikipedia.org/wiki/CPUID#EAX.3D1:_Processor_Info_and_Feature_Bits
+  TIntelCpuFeature =
    ( { in EDX }
    cfFPU, cfVME, cfDE, cfPSE, cfTSC, cfMSR, cfPAE, cfMCE,
    cfCX8, cfAPIC, cf_d10, cfSEP, cfMTRR, cfPGE, cfMCA, cfCMOV,
    cfPAT, cfPSE36, cfPSN, cfCLFSH, cf_d20, cfDS, cfACPI, cfMMX,
-   cfFXSR, cfSSE, cfSSE2, cfSS, cfHT, cfTM, cfIA_64, cfPBE,
+   cfFXSR, cfSSE, cfSSE2, cfSS, cfHTT, cfTM, cfIA64, cfPBE,
    { in ECX }
-   cfSSE3, cf_c1, cf_c2, cfMON, cfDS_CPL, cf_c5, cf_c6, cfEIST,
-   cfTM2, cfSSSE3, cfCID, cfSSE5, cf_c12, cfCX16, cfxTPR, cf_c15,
-   cf_c16, cf_c17, cf_c18, cfSSE41, cfSSE42, cf_c21, cf_c22, cfPOPCNT,
-   cf_c24, cfAESNI, cf_c26, cf_c27, cfAVX, cf_c29, cf_c30, cf_HYP);
+   cfSSE3, cfCLMUL, cfDS64, cfMON, cfDSCPL, cfVMX, cfSMX, cfEST,
+   cfTM2, cfSSSE3, cfCID, cfSDBG, cfFMA, cfCX16, cfXTPR, cfPDCM,
+   cf_c16, cfPCID, cfDCA, cfSSE41, cfSSE42, cfX2A, cfMOVBE, cfPOPCNT,
+   cf_TSC, cfAESNI, cfXS, cfOSXS, cfAVX, cfF16C, cfRAND, cfHYP);
+
+  /// all features, as retrieved from an Intel CPU
+  TIntelCpuFeatures = set of TIntelCpuFeature;
+
+/// convert Intel CPU features as plain CSV text
+function ToText(const aIntelCPUFeatures: TIntelCpuFeatures;
+  const Sep: RawUTF8=','): RawUTF8; overload;
+
+{$ifdef CPUINTEL}
+var
+  /// the available CPU features, as recognized at program startup
+  CpuFeatures: TIntelCpuFeatures;
 
 /// compute CRC32C checksum on the supplied buffer using SSE 4.2
 // - use Intel Streaming SIMD Extensions 4.2 hardware accelerated instruction
@@ -11129,6 +11207,8 @@ type
   protected
     fDetailed: string;
     fBuildDateTime: TDateTime;
+    /// change the version (not to be used in most cases)
+    procedure SetVersion(aMajor,aMinor,aRelease,aBuild: integer);
   public
     /// executable major version number
     Major: Integer;
@@ -11148,8 +11228,8 @@ type
     // the executable resources (on compilation time)
     // - you should not have to use this constructor, but rather access the
     // ExeVersion global variable
-    constructor Create(const aFileName: TFileName;
-      aMajor,aMinor,aRelease: integer);
+    constructor Create(const aFileName: TFileName; aMajor: integer=0;
+      aMinor: integer=0; aRelease: integer=0; aBuild: integer=0);
     /// retrieve the version as a 32 bits integer with Major.Minor.Release
     // - following Major shl 16+Minor shl 8+Release bit pattern
     function Version32: integer;
@@ -11387,7 +11467,11 @@ var
 // - by default, the version numbers will be retrieved at startup from the
 // executable itself (if it was included at build time)
 // - but you can use this function to set any custom version numbers
-procedure SetExecutableVersion(aMajor,aMinor,aRelease: integer);
+procedure SetExecutableVersion(aMajor,aMinor,aRelease,aBuild: integer); overload;
+
+/// initialize ExeVersion global variable, supplying the version as text
+// - e.g. SetExecutableVersion('7.1.2.512');
+procedure SetExecutableVersion(const aVersionText: RawUTF8); overload;
 
 /// self-modifying code - change some memory buffer in the code segment
 // - if Backup is not nil, it should point to a Size array of bytes, ready
@@ -14213,20 +14297,21 @@ var
 
 type
   /// the kind of value stored in a TSynMonitor / TSynMonitorUsage property
-  // - i.e. match TSynMonitorTotalMicroSec, TSynMonitorOneMicroSec, TSynMonitorTotalBytes,
-  // TSynMonitorOneBytes, TSynMonitorBytesPerSec, TSynMonitorCount and
-  // TSynMonitorCount64 types as used to store statistic information
+  // - i.e. match TSynMonitorTotalMicroSec, TSynMonitorOneMicroSec,
+  // TSynMonitorOneCount, TSynMonitorOneBytes, TSynMonitorBytesPerSec,
+  // TSynMonitorTotalBytes, TSynMonitorCount and TSynMonitorCount64 types as
+  // used to store statistic information
   // - "cumulative" values would sum each process values, e.g. total elapsed
   // time for SOA execution, task count or total I/O bytes
   // - "immediate" (e.g. svOneBytes or smvBytesPerSec) values would be an evolving
   // single value, e.g. an average value or current disk free size
-  // - use SYNMONITORVALUE_CUMULATIVE = [smvMicroSec,smvBytes,smvBytesPerSec]
+  // - use SYNMONITORVALUE_CUMULATIVE = [smvMicroSec,smvBytes,smvCount,smvCount64]
   // constant to identify the kind of value
   // - TSynMonitorUsage.Track() would use MonitorPropUsageValue() to guess
   // the tracked properties type from class RTTI
   TSynMonitorType = (
-    smvUndefined, smvMicroSec, smvOneMicroSec,
-    smvBytes, smvOneBytes, smvBytesPerSec, smvCount, smvCount64);
+    smvUndefined, smvOneMicroSec, smvOneBytes, smvOneCount, smvBytesPerSec, 
+    smvMicroSec, smvBytes, smvCount, smvCount64);
   /// value types as stored in TSynMonitor / TSynMonitorUsage
   TSynMonitorTypes = set of TSynMonitorType;
 
@@ -14235,6 +14320,12 @@ type
   // SOA computation of a given service
   // - any property defined with this type would be identified by TSynMonitorUsage
   TSynMonitorTotalMicroSec = type QWord;
+
+  /// would identify an immediate time count information, during monitoring
+  // - "immediate" counts won't accumulate, e.g. may store the current number
+  // of thread used by a process
+  // - any property defined with this type would be identified by TSynMonitorUsage
+  TSynMonitorOneCount = type cardinal;
 
   /// would identify an immediate time process information in micro seconds, during monitoring
   // - "immediate" time won't accumulate, i.e. may store the duration of the
@@ -14482,9 +14573,10 @@ type
   // - base class shared e.g. for ORM, SOA or DDD, when a repeatable data
   // process is to be monitored
   // - this class is thread-safe for its methods, but you should call explicitly
-  // Lock/UnLock to access its individual properties 
+  // Lock/UnLock to access its individual properties
   TSynMonitor = class(TSynPersistent)
   protected
+    fName: RawUTF8;
     fProcessing: boolean;
     fTaskCount: TSynMonitorCount64;
     fInternalErrors: TSynMonitorCount;
@@ -14501,11 +14593,16 @@ type
     procedure LockedFromProcessTimer; virtual;
     procedure LockedSum(another: TSynMonitor); virtual;
     procedure WriteDetailsTo(W: TTextWriter); virtual;
+    procedure Changed; virtual;
   public
     /// low-level high-precision timer instance
     InternalTimer: TPrecisionTimer;
     /// initialize the instance nested class properties
-    constructor Create; override;
+    // - you can specify identifier associated to this monitored resource
+    // which would be used for TSynMonitorUsage persistence
+    constructor Create(const aName: RawUTF8); reintroduce; overload; virtual;
+    /// initialize the instance nested class properties
+    constructor Create; overload; override;
     /// finalize the instance
     destructor Destroy; override;
     /// lock the instance for exclusive access
@@ -14568,6 +14665,9 @@ type
     // methods are disallowed, and the global fTimer won't be used any more
     // - thread-safe method
     procedure FromExternalMicroSeconds(const MicroSecondsElapsed: QWord);
+    /// an identifier associated to this monitored resource
+    // - is used e.g. for TSynMonitorUsage persistence/tracking
+    property Name: RawUTF8 read fName write fName;
   published
     /// indicates if this thread is currently working on some process
     property Processing: boolean read fProcessing write fProcessing;
@@ -14648,9 +14748,9 @@ type
   // - including Input/Output statistics and connected Clients count
   TSynMonitorServer = class(TSynMonitorInputOutput)
   protected
-    fCurrentRequestCount: TSynMonitorCount;
-    fClientsCurrent: TSynMonitorCount;
-    fClientsMax: cardinal;
+    fCurrentRequestCount: integer;
+    fClientsCurrent: TSynMonitorOneCount;
+    fClientsMax: TSynMonitorOneCount;
   public
     /// update ClientsCurrent and ClientsMax
     // - thread-safe method
@@ -14663,19 +14763,19 @@ type
     procedure ClientDisconnectAll;
     /// retrieve the number of connected clients
     // - thread-safe method
-    function GetClientsCurrent: TSynMonitorCount;
+    function GetClientsCurrent: TSynMonitorOneCount;
     /// how many concurrent requests are currently processed
     // - returns the updated number of requests
     // - thread-safe method
-    function AddCurrentRequestCount(diff: integer): TSynMonitorCount;
+    function AddCurrentRequestCount(diff: integer): integer;
   published
     /// current count of connected clients
-    property ClientsCurrent: TSynMonitorCount read fClientsCurrent;
+    property ClientsCurrent: TSynMonitorOneCount read fClientsCurrent;
     /// max count of connected clients
-    property ClientsMax: cardinal read fClientsMax;
+    property ClientsMax: TSynMonitorOneCount read fClientsMax;
     /// how many concurrent requests are currently processed
-    // - e.g. increased via InterlockedIncrement() in TSQLRestServer.URI()
-    property CurrentRequestCount: TSynMonitorCount read fCurrentRequestCount;
+    // - modified via AddCurrentRequestCount() in TSQLRestServer.URI()
+    property CurrentRequestCount: integer read fCurrentRequestCount;
   end;
 
   {$M-}
@@ -16732,6 +16832,79 @@ begin
 end;
 
 
+{ TSynTempWriter }
+
+procedure TSynTempWriter.Init(maxsize: integer);
+begin
+  if maxsize<=0 then
+    maxsize := sizeof(tmp.tmp)-1; // -1 for trailing #0
+  tmp.Init(maxsize);
+  pos := tmp.buf;
+end;
+
+procedure TSynTempWriter.Done;
+begin
+  tmp.Done;
+end;
+
+function TSynTempWriter.AsBinary: RawByteString;
+begin
+  SetString(result,PAnsiChar(tmp.buf),pos-tmp.buf);
+end;
+
+function TSynTempWriter.Position: integer;
+begin
+  result := pos-tmp.buf;
+end;
+
+procedure TSynTempWriter.wr(const val; len: integer);
+begin
+  if pos-tmp.buf+len>tmp.len then
+     raise ESynException.CreateUTF8('TSynTempWriter(%) overflow',[tmp.len]);
+  MoveFast(val,pos^,len);
+  inc(pos,len);
+end;
+
+procedure TSynTempWriter.wrb(b: byte);
+begin
+  wr(b,1);
+end;
+
+procedure TSynTempWriter.wrint(int: integer);
+begin
+  wr(int,4);
+end;
+
+procedure TSynTempWriter.wrptrint(int: PtrInt);
+begin
+  wr(int,sizeof(int));
+end;
+
+procedure TSynTempWriter.wrptr(ptr: pointer);
+begin
+  wr(ptr,sizeof(ptr));
+end;
+
+procedure TSynTempWriter.wrss(const str: shortstring);
+begin
+  wr(str,ord(str[0])+1);
+end;
+
+procedure TSynTempWriter.wrw(w: word);
+begin
+  wr(w,2);
+end;
+
+function TSynTempWriter.wrfillchar(count: integer; value: byte): PAnsiChar;
+begin
+  if pos-tmp.buf+count>tmp.len then
+     raise ESynException.CreateUTF8('TSynTempWriter(%) overflow',[tmp.len]);
+  FillCharFast(pos^,count,value);
+  result := pos;
+  inc(pos,count);
+end;
+
+
 function WideCharToUtf8(Dest: PUTF8Char; aWideChar: PtrUInt): integer;
 begin
   if aWideChar<=$7F then begin
@@ -17158,6 +17331,51 @@ Quit:
   result := PtrUInt(dest)-PtrUInt(begd); // dest-begd return char length
 NoSource:
   dest^ := #0; // always append a WideChar(0) to the end of the buffer
+end;
+
+function IsValidUTF8(source: PUTF8Char): Boolean;
+var extra, i: integer;
+    c: cardinal;
+begin
+  result := false;
+  if source<>nil then
+  repeat
+    c := byte(source^);
+    inc(source);
+    if c=0 then break else
+    if c and $80<>0 then begin
+      extra := UTF8_EXTRABYTES[c];
+      if extra=0 then exit else // invalid leading byte
+      for i := 1 to extra do
+        if byte(source^) and $c0<>$80 then
+          exit else
+          inc(source); // check valid UTF-8 content
+    end;
+  until false;
+  result := true;
+end;
+
+function IsValidUTF8WithoutControlChars(source: PUTF8Char): Boolean;
+var extra, i: integer;
+    c: cardinal;
+begin
+  result := false;
+  if source<>nil then
+  repeat
+    c := byte(source^);
+    inc(source);
+    if c=0 then break else
+    if c<32 then exit else // disallow #1..#31 control char
+    if c and $80<>0 then begin
+      extra := UTF8_EXTRABYTES[c];
+      if extra=0 then exit else // invalid leading byte
+      for i := 1 to extra do
+        if byte(source^) and $c0<>$80 then
+          exit else
+          inc(source); // check valid UTF-8 content
+    end;
+  until false;
+  result := true;
 end;
 
 function Utf8ToUnicodeLength(source: PUTF8Char): PtrUInt;
@@ -17722,10 +17940,14 @@ begin
       exit;
     end;
     vtChar: begin
+      {$ifdef FPC} // alf: to circumvent FPC issues
+      RawUnicodeToUtf8(@V.VChar,1,tmpStr);
+      {$else}
       Res.Text := @V.VChar;
       Res.Len := 1;
       result := 1;
       exit;
+      {$endif}
     end;
     vtPWideChar:
       RawUnicodeToUtf8(V.VPWideChar,StrLenW(V.VPWideChar),tmpStr);
@@ -18218,7 +18440,7 @@ asm // rcx=P, rdx=val (Linux: rdi,rsi)
 end;
 {$else}
 {$ifdef PUREPASCAL}
-var c100: cardinal;
+var c100: PtrUInt;
 begin // this code is faster than the Borland's original str() or IntToStr()
   repeat
     if val<10 then begin
@@ -18443,6 +18665,25 @@ const
    tkRecordTypes = [tkObject,tkRecord];
    tkRecordTypeOrSet = [tkObject,tkRecord];
 
+type
+  TDelphiTypeKind = (dkUnknown, dkInteger, dkChar, dkEnumeration, dkFloat,
+    dkString, dkSet, dkClass, dkMethod, dkWChar, dkLString, dkWString,
+    dkVariant, dkArray, dkRecord, dkInterface, dkInt64, dkDynArray,
+    dkUString, dkClassRef, dkPointer, dkProcedure);
+
+const
+  FPCTODELPHI: array[TTypeKind] of TDelphiTypeKind = (
+    dkUnknown,dkInteger,dkChar,dkEnumeration,dkFloat,
+    dkSet,dkMethod,dkString,dkLString,dkLString,
+    dkWString,dkVariant,dkArray,dkRecord,dkInterface,
+    dkClass,dkRecord,dkWChar,dkEnumeration,dkInt64,dkInt64,
+    dkDynArray,dkInterface,dkProcedure,dkUString,dkWChar,dkPointer);
+  DELPHITOFPC: array[TDelphiTypeKind] of TTypeKind = (
+    tkUnknown, tkInteger, tkChar, tkEnumeration, tkFloat,
+    tkSString, tkSet, tkClass, tkMethod, tkWChar, tkLString, tkWString,
+    tkVariant, tkArray, tkRecord, tkInterface, tkInt64, tkDynArray,
+    tkUString, tkProcVar, tkProcVar, tkProcVar);
+
 {$else}
 
 type
@@ -18572,6 +18813,9 @@ type
     kind: TTypeKind;
     NameLen: byte;
     case TTypeKind of
+    tkUnknown: (
+      NameFirst: AnsiChar;
+    );
     tkDynArray: (
       {$ifdef FPC}
       elSize: SizeUInt;
@@ -18649,12 +18893,389 @@ type
     tkFloat: (
       FloatType: TFloatType;
     );
+    tkClass: (
+      ClassType: PAnsiChar; // TClass;
+      ParentInfo: PTypeInfoStored;
+      PropCount: SmallInt;
+      UnitNameLen: byte;
+    );
   end;
+  TPropInfo = packed record
+    PropType: PTypeInfoStored;
+    GetProc: PtrInt;
+    SetProc: PtrInt;
+    StoredProc: PtrInt;
+    Index: Integer;
+    Default: Longint;
+    NameIndex: SmallInt;
+    {$ifdef FPC}
+    PropProcs : Byte;
+    {$endif}
+    NameLen: byte;
+  end;
+  PPropInfo = ^TPropInfo;
 
 const
   /// codePage offset = string header size
   // - used to calc the beginning of memory allocation of a string
   STRRECSIZE = SizeOf(TStrRec);
+
+function ToText(k: TTypeKind): PShortString; overload;
+begin
+  result := GetEnumName(TypeInfo(TTypeKind),ord(k));
+end;
+
+type
+  TTypeInfoSaved = type TRawByteStringDynArray;
+
+function TypeInfoFind(const rttitypes: TTypeInfoSaved;
+  const typename: RawUTF8): pointer;
+var i,len: integer;
+begin
+  len := length(typename);
+  if len<>0 then begin
+    for i := 0 to length(rttitypes)-1 do
+      with PTypeInfo(rttitypes[i])^ do
+      if (NameLen=len) and
+         IdemPropNameUSameLen(@NameFirst,pointer(typename),len) then begin
+        result := @kind;
+        exit;
+      end;
+  end;
+  result := nil;
+end;
+
+function TypeInfoFindIndex(const rttitypes: TTypeInfoSaved;
+  info: pointer): integer;
+var len: integer;
+begin
+  if info<>nil then begin
+    len := PTypeInfo(info)^.NameLen+2; // compare Kind+Name
+    for result := 0 to length(rttitypes)-1 do
+      if CompareMem(pointer(rttitypes[result]),info,len) then
+        exit;
+  end;
+  result := -1;
+end;
+
+var
+  KnownTypeInfo: array of PTypeInfo;
+
+/// add some TypeInfo() RTTI for TypeInfoSave/TypeInfoLoad function
+// - warning: calling this after TypeInfoLoad() would trigger GPF
+procedure TypeInfoSaveRegisterKnown(const Types: array of pointer);
+var i,n: integer;
+begin
+  n := length(KnownTypeInfo);
+  SetLength(KnownTypeInfo,n+length(Types));
+  for i := 0 to high(Types) do
+    KnownTypeInfo[n+i] := Types[i];
+end;
+
+function FindKnownTypeInfoIndex(typeinfo: pointer): integer;
+  function Search(KindNameLen: word; Name: PUTF8Char; NameLen: integer): integer;
+  begin // compare Kind+NameLen, then case-insensitive Name
+    for result := 0 to length(KnownTypeInfo)-1 do
+      with PTypeInfo(KnownTypeInfo[result])^ do
+      if (PWord(kind)^=KindNameLen) and
+         IdemPropNameUSameLen(@NameFirst,Name,NameLen) then
+        exit;
+    result := -1;
+  end;
+begin
+  if typeinfo=nil then
+    result := -1 else
+    with PTypeInfo(typeinfo)^ do
+      result := Search(PWord(@kind)^,@NameFirst,NameLen);
+end;
+
+/// binary external storage of low-level RTTI
+// - add the RTTI to rttitypes[] in a stand-alone way (i.e. with no pointer)
+// - return the index of the type in rttitypes[]
+function TypeInfoSave(var rttitypes: TTypeInfoSaved;
+  info: pointer): integer;
+var k: TTypeKind;
+    i,offs: integer;
+    n: PAnsiChar;
+    np: ^TPropInfo absolute n;
+    rtti: PTypeInfo;
+    tmp: TSynTempWriter;
+  procedure wrtype(nested: PTypeInfoStored);
+  var nfo: PTypeInfo;
+      known: integer;
+  begin
+    {$ifdef FPC}
+    nfo := nested;
+    {$else}
+    if nested=nil then
+      nfo := nil else
+      nfo := nested^;
+    {$endif}
+    if nfo=nil then
+      tmp.wrw(0) else
+    if nfo=info then
+      tmp.wrw(result+2) else begin
+      known := FindKnownTypeInfoIndex(nfo);
+      if known<0 then
+        tmp.wrw(TypeInfoSave(rttitypes,nfo)+2) else begin
+        tmp.wrw(1); // would be recognized by name
+        with PTypeInfo(nfo)^ do
+          tmp.wr(kind,NameLen+2); // match FindKnownTypeInfoIndex() 
+      end;
+    end;
+  end;
+begin
+  result := TypeInfoFindIndex(rttitypes,info);
+  if (result>=0) or (info=nil) then
+    exit;
+  result := length(rttitypes);
+  tmp.Init; // no need of tmp.Done since maxsize=0 will use the stack
+  rtti := info;
+  k := rtti^.Kind;
+  {$ifdef FPC} // storage binary layout is Delphi's
+  i := ord(FPCTODELPHI[k]);
+  tmp.wr(i,1);
+  {$else}
+  tmp.wr(k,sizeof(k));
+  {$endif}
+  tmp.wr(rtti^.NameLen,rtti^.NameLen+1);
+  inc(PByte(rtti),rtti^.NameLen);
+  {$ifdef FPC_REQUIRES_PROPER_ALIGNMENT}
+  rtti := align(rtti,sizeof(rtti));
+  {$endif}
+  with rtti^ do
+  case k of
+  tkChar, tkWChar, tkLString, tkWString, tkVariant, tkInt64
+  {$ifdef UNICODE}, tkUString{$endif}:
+    ; // no additional RTTI needed for those types
+  tkDynArray: begin
+    tmp.wrint(elSize);
+    wrtype(elType);
+    wrtype(elType2);
+  end;
+  tkEnumeration:
+  {$ifdef FPC_ENUMHASINNER}with inner do{$endif} begin
+    tmp.wr(EnumType,sizeof(EnumType));
+    if MinValue<>0 then
+      raise ESynException.CreateUTF8('TypeInfoSave MinValue=%',[MinValue]);
+    tmp.wrw(MaxValue);
+    wrtype(EnumBaseType);
+    n := @NameList;
+    for i := MinValue to MaxValue do
+      inc(n,ord(n^)+1); // next short string (no align() needed on FPC)
+    i := n-@NameList;
+    tmp.wrw(i);
+    tmp.wr(NameList,i);
+  end;
+  tkSet: begin
+    tmp.wr(SetType,sizeof(SetType));
+    wrtype(SetBaseType);
+  end;
+  tkInteger:
+    tmp.wr(IntegerType,sizeof(IntegerType));
+  tkFloat:
+    tmp.wr(FloatType,sizeof(FloatType));
+  tkClass: begin
+    wrtype(ParentInfo);
+    tmp.wrint(PropCount);
+    tmp.wr(UnitNameLen,UnitNameLen+1);
+    n := @UnitNameLen;
+    inc(n,UnitNameLen+1);
+    {$ifdef FPC_REQUIRES_PROPER_ALIGNMENT}
+    n := align(n,sizeof(n));
+    {$endif}
+    for i := 1 to PropCount do begin
+      wrtype(np^.PropType);
+      offs := np^.GetProc;
+      {$ifndef FPC}
+      if offs and {$ifdef CPU64}$ff00000000000000{$else}$ff000000{$endif}<>0 then
+        raise ESynException.CreateUTF8('TypeInfoSave no getter for %',
+          [PShortString(np^.NameLen)^]);
+      {$endif}
+      tmp.wrint(offs);
+      tmp.wrb(np^.StoredProc);
+      tmp.wrint(np^.Index);
+      tmp.wrint(np^.Default);
+      tmp.wrw(np^.NameIndex);
+      tmp.wr(np^.NameLen,np^.NameLen+1);
+      n := PAnsiChar(@np^.NameLen)+np^.NameLen+1;
+      {$ifdef FPC_REQUIRES_PROPER_ALIGNMENT}
+      n := align(n,sizeof(n));
+      {$endif}
+    end;
+  end;
+  else
+    raise ESynException.CreateUTF8('TypeInfoSave(%) unsupported',[ToText(k)^]);
+  end;
+  SetLength(rttitypes,result+1);
+  rttitypes[result] := tmp.AsBinary;
+end;
+
+procedure TypeInfoLoad(var rttitypes: TTypeInfoSaved);
+var rtti: PTypeInfo;
+    tmp: TSynTempWriter;
+    i,t,j,pcount: integer;
+    offs: PtrUInt;
+    stored: boolean; 
+    k: TTypeKind;
+    n: PAnsiChar;
+    types: array of array of packed record
+      offs: word;
+      typindex: word;
+    end;
+    p1: pointer;
+  function nint: integer;
+  begin
+    result := PInteger(n)^;
+    inc(n,4);
+  end;
+  function nw: integer;
+  begin
+    result := PWord(n)^;
+    inc(n,2);
+  end;
+  function nb: integer;
+  begin
+    result := PByte(n)^;
+    inc(n);
+  end;
+  procedure wrss;
+  var len: integer;
+  begin
+    len := PByte(n)^+1;
+    tmp.wr(n^,len); // copy whole shortstring at once
+    inc(n,len);
+    {$ifdef FPC_REQUIRES_PROPER_ALIGNMENT}
+    n := align(n,sizeof(n));
+    {$endif}
+  end;
+  function wrtype: pointer;
+  var index,off,ti: integer;
+  begin
+    result := tmp.pos;
+    index := nw;
+    if index=1 then begin
+      ti := FindKnownTypeInfoIndex(n);
+      if ti<0 then
+        raise ESynException.CreateUTF8('TypeInfoLoad index=1 %?',
+          [PShortString(@PTypeInfo(n)^.NameLen)^]);
+      inc(n,PTypeInfo(n)^.NameLen+2);
+      {$ifdef FPC} // follow PTypeInfoStored pattern
+      tmp.wrptr(pointer(KnownTypeInfo[ti]));
+      {$else}
+      // warning: any future TypeInfoSaveRegisterKnown() would trigger GPF
+      tmp.wrptr(@pointer(KnownTypeInfo[ti]));
+      {$endif}
+      exit;
+    end;
+    off := tmp.Position;
+    tmp.wrptr(nil);
+    if index=0 then
+      exit;
+    SetLength(types[i],t+1);
+    with types[i,t] do begin
+      offs := off;
+      typindex := index-2;
+    end;
+    inc(t);
+  end;
+begin
+  SetLength(types,Length(rttitypes));
+  for i := 0 to Length(rttitypes)-1 do begin
+    t := 0;
+    tmp.Init;
+    rtti := pointer(rttitypes[i]);
+    {$ifdef FPC}
+    k := DELPHITOFPC[TDelphiTypeKind(rtti^.Kind)];
+    if (k=tkEnumeration) and
+       IdemPropName(PShortString(rtti^.NameLen)^,'boolean') then
+      k := tkBool;
+    {$else}
+    k := rtti^.Kind;
+    {$endif}
+    tmp.wr(k,sizeof(k));
+    n := @rtti^.NameLen; // n^ points to variable buffer -> use nb/nw/nint
+    wrss; // copy Name
+    case k of
+    tkChar, tkWChar, tkLString, tkWString, tkVariant, tkInt64
+    {$ifdef UNICODE}, tkUString{$endif}
+    {$ifdef FPC}, tkBool{$endif}:
+      ; // no additional RTTI needed for those types
+    tkDynArray: begin // elSize,elType,elType2
+      {$ifdef FPC}
+      tmp.wrptrint(nint);
+      p1 := wrtype;
+      tmp.wrint(0);
+      Exchg(p1,wrtype,sizeof(pointer)); // invert elType <-> elType2
+      {$else}
+      tmp.wrint(nint);
+      wrtype;
+      tmp.wrint(0);
+      wrtype;
+      {$endif}
+    end;
+    tkEnumeration: begin
+      tmp.wrb(nb);
+      tmp.wrint(0); // MinValue
+      tmp.wrint(nint);
+      wrtype;
+      j := nw;
+      tmp.wr(n^,j); // NameList
+    end;
+    tkInteger, tkFloat:
+      tmp.wrb(nb);
+    tkSet: begin
+      tmp.wrb(nb);
+      wrtype;
+    end;
+    tkClass: begin
+      p1 := tmp.wrfillchar(sizeof(pointer),0);
+      wrtype;
+      pcount := nw;
+      tmp.wrw(pcount);
+      wrss; // copy UnitName
+      for j := 1 to pcount do begin
+        wrtype;             // PropType
+        offs := nint;       // GetProc=SetProc=fieldaddr
+        {$ifndef FPC}
+        offs := offs or {$ifdef CPU64}$ff00000000000000{$else}$ff000000{$endif};
+        {$endif}
+        tmp.wrptrint(offs);
+        tmp.wrptrint(offs);
+        stored := nb<>0;
+        if stored then
+          tmp.wrptrint(-1) else
+          tmp.wrptrint(0);
+        tmp.wrint(nint);    // Index
+        tmp.wrint(nint);    // Default
+        tmp.wrw(nw);        // NameIndex
+        {$ifdef FPC} // PropProcs: GetProc=SetProc=ptField
+        if stored then
+          tmp.wrb(ptconst shl 4) else
+          tmp.wrb(0);
+        {$endif}
+        wrss; // copy Name
+      end;
+      // FIX: compute TClass at p1^
+      PPointer(p1)^ := nil;
+    end;
+    else
+      raise ESynException.CreateUTF8('TypeInfoLoad(%) unsupported',[ToText(k)^]);
+    end;
+    rttitypes[i] := tmp.AsBinary; // replace with true RTTI
+  end;
+  // fix all internal pointers
+  for i := 0 to Length(rttitypes)-1 do begin
+    n := pointer(rttitypes[i]);
+    for t := 0 to length(types[i])-1 do
+    with types[i,t] do
+      {$ifdef FPC} // follow PTypeInfoStored pattern
+      PPointer(n+offs)^ := pointer(rttitypes[typindex]);
+      {$else}
+      PPointer(n+offs)^ := @pointer(rttitypes[typindex]);
+      {$endif}
+  end;
+end;
 
 procedure SetRawUTF8(var Dest: RawUTF8; text: pointer; len: integer);
 {$ifdef FPC}inline;
@@ -19151,35 +19772,6 @@ begin
   end;
 end;
 
-function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
-var tmp: RawUTF8;
-    vd: TVarData;
-begin
-  with TVarData(V) do
-  if VType=varVariant or varByRef then
-    result := VariantToDateTime(PVariant(VPointer)^,Value) else
-  case VType of
-  varDouble,varDate: begin
-    Value := VDouble;
-    result := true;
-  end;
-  varSingle: begin
-    Value := VSingle;
-    result := true;
-  end;
-  varCurrency: begin
-    Value := VCurrency;
-    result := true;
-  end else
-    if SetVariantUnRefSimpleValue(V,vd) then
-      result := VariantToDateTime(variant(vd),Value) else begin
-      VariantToUTF8(V,tmp);
-      Iso8601ToDateTimePUTF8CharVar(pointer(tmp),length(tmp),Value);
-      result := Value<>0;
-    end;
-  end;
-end;
-
 function VariantToCurrency(const V: Variant; var Value: currency): boolean;
 var tmp: TVarData;
 begin
@@ -19269,6 +19861,35 @@ begin
 end;
 
 {$ifndef NOVARIANTS}
+
+function VariantToDateTime(const V: Variant; var Value: TDateTime): boolean;
+var tmp: RawUTF8;
+    vd: TVarData;
+begin
+  with TVarData(V) do
+  if VType=varVariant or varByRef then
+    result := VariantToDateTime(PVariant(VPointer)^,Value) else
+  case VType of
+  varDouble,varDate: begin
+    Value := VDouble;
+    result := true;
+  end;
+  varSingle: begin
+    Value := VSingle;
+    result := true;
+  end;
+  varCurrency: begin
+    Value := VCurrency;
+    result := true;
+  end else
+    if SetVariantUnRefSimpleValue(V,vd) then
+      result := VariantToDateTime(variant(vd),Value) else begin
+      VariantToUTF8(V,tmp);
+      Iso8601ToDateTimePUTF8CharVar(pointer(tmp),length(tmp),Value);
+      result := Value<>0;
+    end;
+  end;
+end;
 
 procedure VariantToInlineValue(const V: Variant; var result: RawUTF8);
 var wasString: boolean;
@@ -20531,6 +21152,14 @@ begin
   result := 0;
 end;
 
+procedure AppendCharToRawUTF8(var Text: RawUTF8; Ch: AnsiChar);
+var L: integer;
+begin
+  L := length(Text);
+  SetLength(Text,L+1);
+  PByteArray(Text)[L] := ord(Ch);
+end;
+
 procedure AppendBufferToRawUTF8(var Text: RawUTF8; Buffer: pointer; BufferLen: PtrInt);
 var L: PtrInt;
 begin
@@ -21306,6 +21935,9 @@ begin
   A := 0;
   P := 0;
   F := pointer(Format);
+  {$ifdef FPC}
+  try // alf: to circumvent FPC issues
+  {$endif}
   while F^<>#0 do begin
     if F^<>'%' then begin
       FDeb := F;
@@ -21387,6 +22019,11 @@ Txt:  len := F-FDeb;
       inc(F,2);
     end;
   end;
+  {$ifdef FPC}
+  finally
+    finalize(tmp);
+  end;
+  {$endif}
 end;
 
 function RawByteStringArrayConcat(const Values: array of RawByteString): RawByteString;
@@ -23699,11 +24336,29 @@ begin
   BinToHexDisplay(@AInt64,pointer(result),sizeof(Int64));
 end;
 
-procedure YearToPChar(Y: Word; P: PUTF8Char);
-{$ifdef PUREPASCAL}
+type TWordRec = packed record YDiv100, YMod100: byte; end;
+
+{$ifdef FPC_OR_PUREPASCAL} // Alf reported asm below fails with FPC/Linux32
+function Div100(Y: word): TWordRec; {$ifdef HASINLINE}inline;{$endif}
 begin
-  PWordArray(P)[0] := TwoDigitLookupW[Y div 100];
-  PWordArray(P)[1] := TwoDigitLookupW[Y mod 100];
+  result.YDiv100 := Y div 100;
+  result.YMod100 := Y-(result.YDiv100*100); // * is always faster than div
+end;
+{$else}
+function Div100(Y: word): TWordRec;
+asm
+  mov cl,100
+  div cl // ah=remainder=Y mod 100, al=quotient=Year div 100
+end;
+{$endif}
+
+procedure YearToPChar(Y: cardinal; P: PUTF8Char);
+{$ifdef PUREPASCAL}
+var d100: cardinal;
+begin
+  d100 := Y div 100;
+  PWordArray(P)[0] := TwoDigitLookupW[d100];
+  PWordArray(P)[1] := TwoDigitLookupW[Y-(d100*100)];
 end;
 {$else}
 asm
@@ -24631,10 +25286,17 @@ begin // 5 times faster than CreateFile, GetFileSizeEx, CloseHandle
     PInt64Rec(@result)^.Hi := FA.nFileSizeHigh;
   end else
     result := 0;
-end;
+end;          
 {$else}
+var f: THandle;
+    res: Int64Rec absolute result;
 begin
-  result := GetLargeFileSize(FileName);
+  result := 0;
+  f := FileOpen(FileName,fmOpenRead or fmShareDenyNone);
+  if PtrInt(f)>0 then begin
+    res.Lo := GetFileSize(f,@res.Hi); // from SynKylix/SynFPCLinux
+    FileClose(f);
+  end;
 end;
 {$endif}
 
@@ -28010,7 +28672,7 @@ var i: integer;
 begin
   result := false;
   for i := 0 to length(Values)-1 do
-    if Values[i]='' then
+    if Values[i]<>'' then
       exit;
   result := true;
 end;
@@ -28020,7 +28682,7 @@ var i: integer;
 begin
   result := false;
   for i := 0 to length(Values)-1 do
-    if Values[i]=0 then
+    if Values[i]<>0 then
       exit;
   result := true;
 end;
@@ -28030,7 +28692,7 @@ var i: integer;
 begin
   result := false;
   for i := 0 to length(Values)-1 do
-    if Values[i]=0 then
+    if Values[i]<>0 then
       exit;
   result := true;
 end;
@@ -28790,22 +29452,6 @@ function crc32cUTF8ToHex(const str: RawUTF8): RawUTF8;
 begin
   result := CardinalToHex(crc32c(0,pointer(str),length(str)));
 end;
-
-type TWordRec = packed record YDiv100, YMod100: byte; end;
-
-{$ifdef FPC_OR_PUREPASCAL} // Alf reported asm below fails with FPC/Linux32
-function Div100(Y: cardinal): TWordRec; {$ifdef HASINLINE}inline;{$endif}
-begin
-  result.YDiv100 := Y div 100;
-  result.YMod100 := Y-(result.YDiv100*100); // * is always faster than div
-end;
-{$else}
-function Div100(Y: word): TWordRec;
-asm
-  mov cl,100
-  div cl // ah=remainder=Y mod 100, al=quotient=Year div 100
-end;
-{$endif}
 
 function UnixTimeToDateTime(const UnixTime: Int64): TDateTime;
 begin
@@ -31109,22 +31755,37 @@ begin
   end;
 end;
 
+function ToText(const aIntelCPUFeatures: TIntelCpuFeatures; const Sep: RawUTF8): RawUTF8;
+var f: TIntelCpuFeature;
+    List: PShortString;
+    MaxValue: integer;
+begin
+  result := '';
+  if GetEnumInfo(TypeInfo(TIntelCpuFeature),MaxValue,List) then
+    for f := low(f) to high(f) do begin
+      if (f in aIntelCPUFeatures) and (List^[3]<>'_') then begin
+        if result<>'' then
+          result := result+Sep;
+        result := result+RawUTF8(copy(List^,3,10));
+      end;
+      inc(PByte(List),ord(List^[0])+1); // next short string
+    end;
+end;
 
 function SystemInfoJson: RawUTF8;
 begin
   with SystemInfo do
     result := JSONEncode([
       'host',ExeVersion.Host,'user',ExeVersion.User,'os',OSVersionText,
-      {$ifndef PUREPASCAL}{$ifdef CPUINTEL}
-      'hyperthread',cfHT in CpuFeatures,'sse2',cfSSE2 in CpuFeatures,
-      'sse42',cfSSE42 in CpuFeatures,'aesni',cfAESNI in CpuFeatures,
-      {$endif}{$endif}
       'cpucount',
       {$ifdef MSWINDOWS}
       dwNumberOfProcessors,{$ifndef CPU64}'wow64',IsWow64,{$endif}
       {$else MSWINDOWS}
       nprocs,
       {$endif MSWINDOWS}
+      {$ifndef PUREPASCAL}{$ifdef CPUINTEL}
+      'cpufeatures', LowerCase(ToText(CpuFeatures, ' ')),
+      {$endif}{$endif}
       'freemem',TSynMonitorMemory.FreeAsText,'freedisk',TSynMonitorDisk.FreeAsText]);
 end;
 
@@ -31229,7 +31890,7 @@ const
 { TFileVersion }
 
 constructor TFileVersion.Create(const aFileName: TFileName;
-  aMajor,aMinor,aRelease: integer);
+  aMajor,aMinor,aRelease,aBuild: integer);
 var M,D: word;
 {$ifdef MSWINDOWS}
     Size, Size2: DWord;
@@ -31240,9 +31901,6 @@ var M,D: word;
     tmp: TFileName;
 {$endif}
 begin
-  Major := aMajor; // some default values
-  Minor := aMinor;
-  Release := aRelease;
   {$ifdef MSWINDOWS}
   if aFileName<>'' then begin
     // GetFileVersionInfo modifies the filename parameter data while parsing.
@@ -31256,11 +31914,11 @@ begin
         VerQueryValue(Pt, '\', pointer(Info), Size2);
         with Info^ do begin
           if Version32=0 then begin
-            Major := dwFileVersionMS shr 16;
-            Minor := word(dwFileVersionMS);
-            Release := dwFileVersionLS shr 16;
+            aMajor := dwFileVersionMS shr 16;
+            aMinor := word(dwFileVersionMS);
+            aRelease := dwFileVersionLS shr 16;
           end;
-          Build := word(dwFileVersionLS);
+          aBuild := word(dwFileVersionLS);
           BuildYear := 2010;
           if (dwFileDateLS<>0) and (dwFileDateMS<>0) then begin
             FileTime.dwLowDateTime:= dwFileDateLS; // built date from version info
@@ -31276,8 +31934,7 @@ begin
     end;
   end;
   {$endif}
-  Main := IntToString(Major)+'.'+IntToString(Minor);
-  fDetailed := Main+ '.'+IntToString(Release)+'.'+IntToString(Build);
+  SetVersion(aMajor,aMinor,aRelease,aBuild);
   if fBuildDateTime=0 then  // get build date from file age
     fBuildDateTime := FileAgeToDateTime(aFileName);
   if fBuildDateTime<>0 then
@@ -31289,6 +31946,16 @@ begin
   result := Major shl 16+Minor shl 8+Release;
 end;
 
+procedure TFileVersion.SetVersion(aMajor,aMinor,aRelease,aBuild: integer);
+begin
+  Major := aMajor;
+  Minor := aMinor;
+  Release := aRelease;
+  Build := aBuild;
+  Main := IntToString(Major)+'.'+IntToString(Minor);
+  fDetailed := Main+ '.'+IntToString(Release)+'.'+IntToString(Build);
+end;
+
 function TFileVersion.BuildDateTimeString: string;
 begin
   DateTimeToIso8601StringVar(fBuildDateTime,' ',result);
@@ -31296,7 +31963,7 @@ end;
 
 class function TFileVersion.GetVersionInfo(const aFileName: TFileName): RawUTF8;
 begin
-  with Create(aFileName,0,0,0) do
+  with Create(aFileName,0,0,0,0) do
   try
     FormatUTF8('% % %',[ExtractFileName(aFileName),Detailed,BuildDateTimeString],result);
   finally
@@ -31304,66 +31971,68 @@ begin
   end;
 end;
 
-procedure SetExecutableVersion(aMajor,aMinor,aRelease: integer);
-var setVersion,i: integer;
+procedure SetExecutableVersion(const aVersionText: RawUTF8);
+var P: PUTF8Char;
+    i: integer;
+    ver: array[0..3] of integer;
+begin
+  P := pointer(aVersionText);
+  for i := 0 to 3 do
+    ver[i] := GetNextItemCardinal(P,'.');
+  SetExecutableVersion(ver[0],ver[1],ver[2],ver[3]);
+end;
+
+procedure SetExecutableVersion(aMajor,aMinor,aRelease,aBuild: integer);
+var i: integer;
 {$ifdef MSWINDOWS}
     Tmp: array[byte] of WideChar;
     TmpSize: cardinal;
-{$else}
 {$endif}
 begin
-  setVersion := aMajor shl 16+aMinor shl 8+aRelease;
-  with ExeVersion do
-  if Version<>nil then
-    if Version.Version32=setVersion then
-      exit else begin // forget previous to allow version number forcing
-      i := GarbageCollector.IndexOf(Version);
-      if i>0 then
-        GarbageCollector.Delete(i);
-      Version := nil; // will replace existing TFileVersion instance
-    end;
-  with ExeVersion do
-  if Version=nil then begin
-    {$ifdef MSWINDOWS}
-    ProgramFileName := paramstr(0);
-    {$else}
-    ProgramFileName := GetModuleName(hInstance);
-    if ProgramFileName='' then
-      ProgramFileName := ExpandFileName(paramstr(0));
-    {$endif}
-    ProgramFilePath := ExtractFilePath(ProgramFileName);
-    if IsLibrary then
-      InstanceFileName := GetModuleName(HInstance) else
-      InstanceFileName := ProgramFileName;
-    GarbageCollectorFreeAndNil(Version,
-      TFileVersion.Create(InstanceFileName,aMajor,aMinor,aRelease));
+  with ExeVersion do begin
+    if Version=nil then begin
+      {$ifdef MSWINDOWS}
+      ProgramFileName := paramstr(0);
+      {$else}
+      ProgramFileName := GetModuleName(hInstance);
+      if ProgramFileName='' then
+        ProgramFileName := ExpandFileName(paramstr(0));
+      {$endif}
+      ProgramFilePath := ExtractFilePath(ProgramFileName);
+      if IsLibrary then
+        InstanceFileName := GetModuleName(HInstance) else
+        InstanceFileName := ProgramFileName;
+      ProgramName := StringToUTF8(ExtractFileName(ProgramFileName));
+      i := length(ProgramName);
+      while i>0 do
+        if ProgramName[i]='.' then begin
+          SetLength(ProgramName,i-1);
+          break;
+        end else
+        dec(i);
+      {$ifdef MSWINDOWS}
+      TmpSize := sizeof(Tmp);
+      GetComputerNameW(Tmp,TmpSize);
+      RawUnicodeToUtf8(@Tmp,StrLenW(Tmp),Host);
+      TmpSize := sizeof(Tmp);
+      GetUserNameW(Tmp,TmpSize);
+      RawUnicodeToUtf8(@Tmp,StrLenW(Tmp),User);
+      {$else}
+      Host := GetHostName;
+      {$ifdef KYLIX3}
+      User := LibC.getpwuid(LibC.getuid)^.pw_name;
+      {$endif}
+      {$endif}
+      if Host='' then
+        Host := 'unknown';
+      if User='' then
+        User := 'unknown';
+      GarbageCollectorFreeAndNil(Version,
+        TFileVersion.Create(InstanceFileName,aMajor,aMinor,aRelease,aBuild));
+    end else
+      Version.SetVersion(aMajor,aMinor,aRelease,aBuild);
     FormatUTF8('% % (%)',[ProgramFileName,Version.Detailed,
       DateTimeToIso8601(Version.BuildDateTime,True,' ')],ProgramFullSpec);
-    ProgramName := StringToUTF8(ExtractFileName(ProgramFileName));
-    i := length(ProgramName);
-    while i>0 do
-      if ProgramName[i]='.' then begin
-        SetLength(ProgramName,i-1);
-        break;
-      end else
-      dec(i);
-    {$ifdef MSWINDOWS}
-    TmpSize := sizeof(Tmp);
-    GetComputerNameW(Tmp,TmpSize);
-    RawUnicodeToUtf8(@Tmp,StrLenW(Tmp),Host);
-    TmpSize := sizeof(Tmp);
-    GetUserNameW(Tmp,TmpSize);
-    RawUnicodeToUtf8(@Tmp,StrLenW(Tmp),User);
-    {$else}
-    Host := GetHostName;
-    {$ifdef KYLIX3}
-    User := LibC.getpwuid(LibC.getuid)^.pw_name;
-    {$endif}
-    {$endif}
-    if Host='' then
-      Host := 'unknown';
-    if User='' then
-      User := 'unknown';
   end;
 end;
 
@@ -34049,7 +34718,7 @@ begin
     end;
     end;
     raise ESynException.CreateUTF8('%.Create("%") unsupported type: % (%)',
-      [self,fCustomTypeName,GetEnumName(TypeInfo(TTypeKind),ord(kind))^,ord(kind)]);
+      [self,fCustomTypeName,ToText(kind)^,ord(kind)]);
   end;
 end;
 
@@ -47153,6 +47822,12 @@ begin
   InitializeCriticalSection(fLock);
 end;
 
+constructor TSynMonitor.Create(const aName: RawUTF8);
+begin
+  Create;
+  fName := aName;
+end;
+
 destructor TSynMonitor.Destroy;
 begin
   fMaximalTime.Free;
@@ -47172,6 +47847,10 @@ end;
 procedure TSynMonitor.UnLock;
 begin
   LeaveCriticalSection(fLock);
+end;
+
+procedure TSynMonitor.Changed;
+begin // do nothing by default - overriden classes may track modified changes
 end;
 
 procedure TSynMonitor.ProcessStart;
@@ -47194,6 +47873,7 @@ begin
   try
     inc(fTaskCount);
     fTaskStatus := taskStarted;
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
@@ -47209,6 +47889,7 @@ begin
     fProcessing := true;
     inc(fTaskCount);
     fTaskStatus := taskStarted;
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
@@ -47240,6 +47921,7 @@ begin
   end;
   LockedPerSecProperties;
   fProcessing := false;
+  Changed;
 end;
 
 function TSynMonitor.FromExternalQueryPerformanceCounters(const CounterDiff: QWord): QWord;
@@ -47276,13 +47958,15 @@ begin
   for i := 0 to Count-1 do
     TPointerDynArray(ObjArr)[i] := Create;
 end;
-
+                       
 procedure TSynMonitor.ProcessError(const info: variant);
 begin
   EnterCriticalSection(fLock);
   try
-    inc(fInternalErrors);
+    if not VarIsEmptyOrNull(info) then
+      inc(fInternalErrors);
     fLastInternalError := info;
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
@@ -47368,6 +48052,7 @@ begin
   _Json(ComputeDetailsJSON,result,JSON_OPTIONS_FAST);
 end;
 {$endif}
+
 
 { TSynMonitorWithSize}
 
@@ -47466,6 +48151,7 @@ begin
     inc(fClientsCurrent);
     if fClientsCurrent>fClientsMax then
       fClientsMax := fClientsCurrent;
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
@@ -47477,6 +48163,7 @@ begin
   try
     if fClientsCurrent>0 then
       dec(fClientsCurrent);
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
@@ -47487,12 +48174,13 @@ begin
   EnterCriticalSection(fLock);
   try
     fClientsCurrent := 0;
+    Changed;
   finally
     LeaveCriticalSection(fLock);
   end;
 end;
 
-function TSynMonitorServer.GetClientsCurrent: TSynMonitorCount;
+function TSynMonitorServer.GetClientsCurrent: TSynMonitorOneCount;
 begin
   EnterCriticalSection(fLock);
   try
@@ -47502,11 +48190,11 @@ begin
   end;
 end;
 
-function TSynMonitorServer.AddCurrentRequestCount(diff: integer): TSynMonitorCount;
+function TSynMonitorServer.AddCurrentRequestCount(diff: integer): integer;
 begin
   EnterCriticalSection(fLock);
   try
-    inc(integer(fCurrentRequestCount),diff);
+    inc(fCurrentRequestCount,diff);
     result := fCurrentRequestCount;
   finally
     LeaveCriticalSection(fLock);
@@ -48345,8 +49033,20 @@ begin
     result := AddObject(aText,nil);
 end;
 
+function TRawUTF8List.AddIfNotExisting(const aText: RawUTF8; wasAdded: PBoolean): PtrInt;
+begin
+  result := IndexOf(aText);
+  if result<0 then begin
+    result := Add(aText);
+    if wasAdded<>nil then
+      wasAdded^ := true;
+  end else
+    if wasAdded<>nil then
+      wasAdded^ := false;
+end;
+
 function TRawUTF8List.AddObjectIfNotExisting(const aText: RawUTF8; aObject: TObject;
-  wasAdded: PBoolean=nil): PtrInt;
+  wasAdded: PBoolean): PtrInt;
 begin
   result := IndexOf(aText);
   if result<0 then begin
@@ -49151,6 +49851,22 @@ begin
   result := fHash.FindHashed(aText);
 end;
 
+function TRawUTF8ListHashed.AddIfNotExisting(const aText: RawUTF8;
+  wasAdded: PBoolean): PtrInt;
+var added: boolean;
+begin
+  if fChanged then
+    fChanged := not fHash.ReHash; // rough, but working implementation
+  result := fHash.FindHashedForAdding(aText,added);
+  if added then begin
+    fList[result] := aText;
+    if (fObjects<>nil) and (length(fObjects)<>length(fList)) then
+      SetLength(fObjects,length(fList));
+  end;
+  if wasAdded<>nil then
+    wasAdded^ := added;
+end;
+
 function TRawUTF8ListHashed.AddObjectIfNotExisting(
   const aText: RawUTF8; aObject: TObject; wasAdded: PBoolean): PtrInt;
 var added: boolean;
@@ -49213,6 +49929,17 @@ begin
   fSafe.Lock;
   try
     result := inherited GetObjectByName(aText);
+  finally
+    fSafe.UnLock;
+  end;
+end;
+
+function TRawUTF8ListHashedLocked.AddIfNotExisting(const aText: RawUTF8;
+  wasAdded: PBoolean): PtrInt;
+begin
+  fSafe.Lock;
+  try
+    result := inherited AddIfNotExisting(aText,wasAdded);
   finally
     fSafe.UnLock;
   end;
@@ -49840,9 +50567,16 @@ begin
   fInternalStream := true;
 end;
 
-constructor TFileBufferWriter.Create(const aFileName: TFileName; BufLen: integer);
+constructor TFileBufferWriter.Create(const aFileName: TFileName; BufLen: integer;
+  Append: boolean);
+var s: TStream;
 begin
-  Create(TFileStream.Create(aFileName,fmCreate),BufLen);
+  if Append and FileExists(aFileName) then begin
+    s := TFileStream.Create(aFileName,fmOpenWrite);
+    s.Seek(0,soFromEnd);
+  end else
+    s := TFileStream.Create(aFileName,fmCreate);
+  Create(s,BufLen);
   fInternalStream := true;
 end;
 
@@ -55421,8 +56155,8 @@ begin
   if not Assigned(aOnProcess) then
     raise ESynException.CreateUTF8('%.Create(aOnProcess=nil)',[self]);
   if aStats<>nil then
-    fStats := aStats.Create else
-    fStats := TSynMonitor.Create;
+    fStats := aStats.Create(aThreadName) else
+    fStats := TSynMonitor.Create(aThreadName);
   fOnProcess := aOnProcess;
   fOnProcessMS := aOnProcessMS;
   if fOnProcessMS=0 then
@@ -55992,7 +56726,7 @@ initialization
   {$endif FPC}
   InitSynCommonsConversionTables;
   RetrieveSystemInfo;
-  SetExecutableVersion(0,0,0);
+  SetExecutableVersion(0,0,0,0);
   TTextWriter.RegisterCustomJSONSerializerFromText(TypeInfo(TFindFilesDynArray),
     'Name string Attr Integer Size Int64 TimeStamp TDateTime');
   // some type definition assertions
@@ -56006,6 +56740,11 @@ initialization
   Assert((MAX_SQLFIELDS>=64)and(MAX_SQLFIELDS<=256));
   {$warnings ON}
   Assert(sizeof(TSynUniqueIdentifierBits)=sizeof(TSynUniqueIdentifier));
+{  TypeInfoSaveRegisterKnown([
+    TypeInfo(boolean),TypeInfo(byte),TypeInfo(word),TypeInfo(cardinal),TypeInfo(Int64),
+    TypeInfo(single),TypeInfo(double),TypeInfo(currency),TypeInfo(extended),TypeInfo(TDateTime),
+    TypeInfo(RawByteString),TypeInfo(RawJSON),TypeInfo(RawUTF8),TypeInfo(string),
+    TypeInfo(SynUnicode),TypeInfo(WideString)]); }
 
 finalization
   GarbageCollectorFree;

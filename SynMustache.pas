@@ -6,7 +6,7 @@ unit SynMustache;
 {
     This file is part of Synopse mORMot framework.
 
-    Synopse mORMot framework. Copyright (C) 2016 Arnaud Bouchez
+    Synopse mORMot framework. Copyright (C) 2017 Arnaud Bouchez
       Synopse Informatique - http://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -25,7 +25,7 @@ unit SynMustache;
 
   The Initial Developer of the Original Code is Arnaud Bouchez.
 
-  Portions created by the Initial Developer are Copyright (C) 2016
+  Portions created by the Initial Developer are Copyright (C) 2017
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -1173,7 +1173,7 @@ var tmp: TVarData;
 begin
   if (ValueName='') or (ValueName[1] in ['0'..'9','"','{','[']) or
      (ValueName='true') or (ValueName='false') or (ValueName='null') then
-    VariantLoadJSON(result,pointer(ValueName),nil,@JSON_OPTIONS[true]) else begin
+    VariantLoadJSON(result,ValueName,@JSON_OPTIONS[true]) else begin
     GetValueFromContext(ValueName,tmp);
     SetVariantByValue(variant(tmp),result); // copy value
   end;

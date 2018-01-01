@@ -4,7 +4,7 @@ unit SynFPCLinux;
 {
     This file is part of Synopse mORMot framework.
 
-    Synopse mORMot framework. Copyright (C) 2017 Arnaud Bouchez
+    Synopse mORMot framework. Copyright (C) 2018 Arnaud Bouchez
       Synopse Informatique - https://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -23,7 +23,7 @@ unit SynFPCLinux;
 
   The Initial Developer of the Original Code is Alfred Glaenzer.
 
-  Portions created by the Initial Developer are Copyright (C) 2017
+  Portions created by the Initial Developer are Copyright (C) 2018
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -117,6 +117,9 @@ function GetFileSize(hFile: cInt; lpFileSizeHigh: PDWORD): DWORD;
 
 /// compatibility function, wrapping Win32 API file truncate at current position
 procedure SetEndOfFile(hFile: cInt); inline;
+
+/// compatibility function, wrapping Win32 API file flush to disk
+procedure FlushFileBuffers(hFile: cInt);
 
 /// compatibility function, wrapping Win32 API last error code
 function GetLastError: longint; inline;
@@ -380,6 +383,11 @@ end;
 procedure SetEndOfFile(hFile: cInt);
 begin
   FpFtruncate(hFile,FPLseek(hFile,0,SEEK_CUR));
+end;
+
+procedure FlushFileBuffers(hFile: cInt);
+begin
+  FpFsync(hFile);
 end;
 
 function GetLastError: longint;

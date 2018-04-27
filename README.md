@@ -1,10 +1,10 @@
-`SynMustache` is a Delphi implementation of the [Mustache template language](http://mustache.github.com/).
+`SynMustache` is a Delphi/FPC implementation of the [Mustache template language](http://mustache.github.com/).
 
 
 Presentation
 ============
 
-  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to Delphi 10 Seattle (and FPC/Lazarus compilation);
+  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to Delphi 10.2, and FPC/Lazarus;
   * It has a separate parser and renderer (so you can compile your templates ahead of time);
   * The parser features a shared cache of compiled templates;
   * It [passes all official Mustache specification tests](https://github.com/mustache/spec) - including all weird whitespace process;

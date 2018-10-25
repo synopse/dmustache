@@ -123,7 +123,7 @@ function GetFileSize(hFile: cInt; lpFileSizeHigh: PDWORD): DWORD;
 procedure SetEndOfFile(hFile: cInt); inline;
 
 /// compatibility function, wrapping Win32 API file flush to disk
-procedure FlushFileBuffers(hFile: cInt);
+procedure FlushFileBuffers(hFile: cInt); inline;
 
 /// compatibility function, wrapping Win32 API last error code
 function GetLastError: longint; inline;
@@ -133,17 +133,17 @@ procedure SetLastError(error: longint); inline;
 
 /// compatibility function, wrapping Win32 API text comparison
 function CompareStringW(GetThreadLocale: DWORD; dwCmpFlags: DWORD; lpString1: Pwidechar;
-  cchCount1: longint; lpString2: Pwidechar; cchCount2: longint): longint; inline;
+  cchCount1: longint; lpString2: Pwidechar; cchCount2: longint): longint;
 
 /// returns the current UTC time
 function GetNowUTC: TDateTime;
 
 /// returns the current UTC time, as Unix Epoch seconds
-function GetUnixUTC: Int64;
+function GetUnixUTC: Int64; inline;
 
 /// returns the current UTC time, as Unix Epoch milliseconds
 // - will call clock_gettime(CLOCK_REALTIME_COARSE) if available
-function GetUnixMSUTC: Int64;
+function GetUnixMSUTC: Int64; inline;
 
 /// returns the current UTC time as TSystemTime
 procedure GetNowUTCSystem(var result: TSystemTime);
@@ -161,7 +161,7 @@ procedure SetUnixThreadName(ThreadID: TThreadID; const Name: RawByteString);
 
 /// compatibility function, to be implemented according to the running OS
 // - expect more or less the same result as the homonymous Win32 API function
-function GetTickCount64: Int64;
+function GetTickCount64: Int64; inline;
 
 /// compatibility function, to be implemented according to the running OS
 // - expect more or less the same result as the homonymous Win32 API function
@@ -207,33 +207,37 @@ const // Date Translation - see http://en.wikipedia.org/wiki/Julian_day
   D1          = 146097;
   D2          = 1721119;
 
-procedure JulianToGregorian(JulianDN: integer; out Year,Month,Day: Word);
-var YYear,XYear,Temp,TempMonth: integer;
+procedure JulianToGregorian(JulianDN: PtrUInt; out result: TSystemTime);
+var YYear,XYear,Temp,TempMonth: PtrUInt;
 begin
   Temp := ((JulianDN-D2) shl 2)-1;
   JulianDN := Temp div D1;
-  XYear := (Temp mod D1) or 3;
-  YYear := (XYear div D0);
-  Temp := ((((XYear mod D0)+4) shr 2)*5)-3;
-  Day := ((Temp mod 153)+5) div 5;
+  XYear := (Temp-(JulianDN*D1)) or 3;
+  YYear := XYear div D0;
+  Temp := (((XYear-(YYear*D0)+4) shr 2)*5)-3;
   TempMonth := Temp div 153;
+  result.Day := ((Temp-(TempMonth*153))+5) div 5;
   if TempMonth>=10 then begin
     inc(YYear);
     dec(TempMonth,12);
   end;
   inc(TempMonth,3);
-  Month := TempMonth;
-  Year := YYear+(JulianDN*100);
+  result.Month := TempMonth;
+  result.Year := YYear+(JulianDN*100);
 end;
 
-procedure EpochToLocal(epoch: cardinal; out year,month,day,hour,minute,second: Word);
+procedure EpochToLocal(epoch: PtrUInt; out result: TSystemTime);
+var t: PtrUInt;
 begin
-  JulianToGregorian((epoch div SecsPerDay)+C1970,year,month,day);
-  epoch := abs(epoch mod SecsPerDay);
-  Hour := epoch div SecsPerHour;
-  epoch := epoch mod SecsPerHour;
-  Minute := epoch div SecsPerMin;
-  Second := epoch mod SecsPerMin;
+  t := epoch div SecsPerDay;
+  JulianToGregorian(t+C1970,result);
+  dec(epoch,t*SecsPerDay);
+  t := epoch div SecsPerHour;
+  result.Hour := t;
+  dec(epoch,t*SecsPerHour);
+  t := epoch div SecsPerMin;
+  result.Minute := t;
+  result.Second := epoch-t*SecsPerMin;
 end;
 
 function GetNowUTC: TDateTime;
@@ -247,8 +251,7 @@ procedure GetNowUTCSystem(var result: TSystemTime);
 var tz: timeval;
 begin
   fpgettimeofday(@tz,nil);
-  EpochToLocal(tz.tv_sec,
-    result.year,result.month,result.day,result.hour,result.Minute,result.Second);
+  EpochToLocal(tz.tv_sec,result);
   result.MilliSecond := tz.tv_usec div 1000;
 end;
 
@@ -399,8 +402,8 @@ end;
 
 function CompareStringW(GetThreadLocale: DWORD; dwCmpFlags: DWORD; lpString1: Pwidechar;
   cchCount1: longint; lpString2: Pwidechar; cchCount2: longint): longint;
-var W1,W2: UnicodeString; // faster than WideString under Windows
-begin
+var W1,W2: WideString;
+begin // not inlined to avoid stack unicodestring allocation
   W1 := lpString1;
   W2 := lpString2;
   if dwCmpFlags and NORM_IGNORECASE<>0 then
@@ -442,7 +445,7 @@ var uts: UtsName;
   end;
 begin
   if fpuname(uts)=0 then begin
-    P := @uts.release;
+    P := @uts.release[0];
     KernelRevision := GetNext shl 16+GetNext shl 8+GetNext;
     {$ifndef BSD}
     if KernelRevision>=$020620 then begin // expects kernel 2.6.32 or higher
@@ -527,7 +530,7 @@ begin
   {$ifndef BSD}
   ExternalLibraries.EnsureLoaded;
   if Assigned(ExternalLibraries.pthread_setname_np) then
-    ExternalLibraries.pthread_setname_np(pointer(ThreadID), @trunc);
+    ExternalLibraries.pthread_setname_np(pointer(ThreadID), @trunc[0]);
   {$endif}
 end;
 

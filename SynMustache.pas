@@ -1273,8 +1273,9 @@ begin
       if DocumentType<>nil then
         if ListCount<0 then begin // single item context
           DocumentType.Lookup(Value,Document,pointer(ValueName));
-          if Value.VType>=varNull then
-            exit;
+          if Value.VType > varNull then
+            result := msSingle;
+          exit;
         end else
         if IdemPChar(pointer(ValueName),'-INDEX') then begin // {{-index}}
           Value.VType := varInteger;
@@ -1338,22 +1339,23 @@ begin
         exit;
       end;
   result := GetValueFromContext(ValueName,Value);
-  if result<>msNothing then begin
-    if (Value.VType<=varNull) or
-       ((Value.VType=varBoolean) and not Value.VBoolean) then
+  if result <> msNothing then begin
+    if (Value.VType <= varNull) or
+       ((Value.VType = varBoolean) and not Value.VBoolean) then
       result := msNothing;
-    exit;
   end;
-  PushContext(Value);
-  if (Value.VType<=varNull) or
-     ((Value.VType=varBoolean) and not Value.VBoolean) then
-    exit; // null or false value will not display the section
-  with fContext[fContextCount-1] do
-      if ListCount<0 then
-        result := msSingle else // single item
-        if ListCount=0 then     // empty list will not display the section
-          exit else
-          result := msList;     // non-empty list
+  // Got a "truthy" value to process?
+  // If not, don't do anything to avoid recursion for partials
+  if result <> msNothing then begin
+    PushContext(Value);
+
+    with fContext[fContextCount-1] do
+        if ListCount<0 then
+          result := msSingle else // single item
+          if ListCount=0 then     // empty list will not display the section
+            exit else
+            result := msList;     // non-empty list
+  end;
 end;
 
 function TSynMustacheContextVariant.GotoNextListItem: boolean;

@@ -2217,7 +2217,7 @@ function AppendRawUTF8ToBuffer(Buffer: PUTF8Char; const Text: RawUTF8): PUTF8Cha
 /// fast add text conversion of a 32-bit signed integer value into a given buffer
 // - warning: the Buffer should contain enough space to store the text, otherwise
 // you may encounter buffer overflows and random memory errors
-function AppendUInt32ToBuffer(Buffer: PUTF8Char; Value: cardinal): PUTF8Char;
+function AppendUInt32ToBuffer(Buffer: PUTF8Char; Value: PtrUInt): PUTF8Char;
 
 
 /// buffer-safe version of StrComp(), to be used with PUTF8Char/PAnsiChar
@@ -4222,9 +4222,20 @@ function FastLocatePUTF8CharSorted(P: PPUTF8CharArray; R: PtrInt; Value: PUTF8Ch
 // - R is the last index of available entries in P^ (i.e. Count-1)
 // - string comparison is case-sensitive StrComp (so will work with any PAnsiChar)
 // - returns -1 if the specified Value was not found
-// - will use fast O(log(n)) binary search algorithm
+// - will use inlined binary search algorithm with optimized x86_64 branchless asm
+// - slightly faster than plain FastFindPUTF8CharSorted(P,R,Value,@StrComp)
 function FastFindPUTF8CharSorted(P: PPUTF8CharArray; R: PtrInt; Value: PUTF8Char): PtrInt; overload;
-  {$ifdef HASINLINE}inline;{$endif}
+
+/// retrieve the index where is located a PUTF8Char in a sorted uppercase PUTF8Char array
+// - P[] array is expected to be already uppercased
+// - searched Value is converted to uppercase before search via UpperCopy255Buf(),
+// so is expected to be short, i.e. length < 250
+// - R is the last index of available entries in P^ (i.e. Count-1)
+// - returns -1 if the specified Value was not found
+// - will use fast O(log(n)) binary search algorithm
+// - slightly faster than plain FastFindPUTF8CharSorted(P,R,Value,@StrIComp)
+function FastFindUpperPUTF8CharSorted(P: PPUTF8CharArray; R: PtrInt;
+  Value: PUTF8Char; ValueLen: PtrInt): PtrInt;
 
 /// retrieve the index where is located a PUTF8Char in a sorted PUTF8Char array
 // - R is the last index of available entries in P^ (i.e. Count-1)
@@ -4336,14 +4347,14 @@ function PtrUIntScanExists(P: PPtrUIntArray; Count: PtrInt; Value: PtrUInt): boo
 // - Count is the number of Byte entries in P^
 // - return index of P^[index]=Value
 // - return -1 if Value was not found
-function ByteScanIndex(P: PByteArray; Count: PtrInt; Value: Byte): integer;
+function ByteScanIndex(P: PByteArray; Count: PtrInt; Value: Byte): PtrInt;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// fast search of an unsigned Word value position in a Word array
 // - Count is the number of Word entries in P^
 // - return index of P^[index]=Value
 // - return -1 if Value was not found
-function WordScanIndex(P: PWordArray; Count: PtrInt; Value: word): integer;
+function WordScanIndex(P: PWordArray; Count: PtrInt; Value: word): PtrInt;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// fast search of a binary value position in a fixed-size array
@@ -4351,6 +4362,10 @@ function WordScanIndex(P: PWordArray; Count: PtrInt; Value: word): integer;
 // - return index of P^[index]=Elem^, comparing ElemSize bytes
 // - return -1 if Value was not found
 function AnyScanIndex(P,Elem: pointer; Count,ElemSize: PtrInt): PtrInt;
+
+/// fast search of a binary value position in a fixed-size array
+// - Count is the number of entries in P^[]
+function AnyScanExists(P,Elem: pointer; Count,ElemSize: PtrInt): boolean;
 
 /// sort an Integer array, low values first
 procedure QuickSortInteger(ID: PIntegerArray; L, R: PtrInt); overload;
@@ -11939,7 +11954,7 @@ function fnv32(crc: cardinal; buf: PAnsiChar; len: PtrInt): cardinal;
 function xxHash32(crc: cardinal; P: PAnsiChar; len: integer): cardinal;
 
 type
-  TCrc32tab = array[0..{$ifdef PUREPASCAL}3{$else}7{$endif},byte] of cardinal;
+  TCrc32tab = array[0..7,byte] of cardinal;
   PCrc32tab = ^TCrc32tab;
 
 var
@@ -11951,8 +11966,9 @@ var
   // TSynUniqueIdentifierGenerator as 1KB master/reference key tables
   crc32ctab: TCrc32tab;
 
-/// compute CRC32C checksum on the supplied buffer using x86/x64 code
+/// compute CRC32C checksum on the supplied buffer on processor-neutral code
 // - result is compatible with SSE 4.2 based hardware accelerated instruction
+// - will use fast x86/x64 asm or efficient pure pascal implementation on ARM
 // - result is not compatible with zlib's crc32() - not the same polynom
 // - crc32cfast() is 1.7 GB/s, crc32csse42() is 4.3 GB/s
 // - you should use crc32c() function instead of crc32cfast() or crc32csse42()
@@ -12157,7 +12173,7 @@ function IsZero(const dig: THash128): boolean; overload;
 /// returns TRUE if all 16 bytes of both 128-bit buffers do match
 // - e.g. a MD5 digest, or an AES block
 // - this function is not sensitive to any timing attack, so is designed
-// for cryptographic purpose
+// for cryptographic purpose - and it is also branchless therefore fast
 function IsEqual(const A,B: THash128): boolean; overload;
   {$ifdef HASINLINE}inline;{$endif}
 
@@ -14558,6 +14574,35 @@ function GetNumericVariantFromJSON(JSON: PUTF8Char; var Value: TVarData;
 // - is a wrapper around GetNextItem() + TextToVariant()
 function GetNextItemToVariant(var P: PUTF8Char; out Value: Variant;
   Sep: AnsiChar= ','; AllowDouble: boolean=true): boolean;
+
+/// retrieve a variant value from a JSON buffer as per RFC 8259, RFC 7159, RFC 7158
+// - follows TTextWriter.AddVariant() format (calls GetVariantFromJSON)
+// - will instantiate either an Integer, Int64, currency, double or string value
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
+// - warning: the JSON buffer will be modified in-place during process - use
+// a temporary copy or the overloaded functions with RawUTF8 parameter
+// if you need to access it later
+procedure JSONToVariantInPlace(var Value: Variant; JSON: PUTF8Char;
+  Options: TDocVariantOptions=[dvoReturnNullForUnknownProperty];
+  AllowDouble: boolean=false);
+
+/// retrieve a variant value from a JSON UTF-8 text as per RFC 8259, RFC 7159, RFC 7158
+// - follows TTextWriter.AddVariant() format (calls GetVariantFromJSON)
+// - will instantiate either an Integer, Int64, currency, double or string value
+// (as RawUTF8), guessing the best numeric type according to the textual content,
+// and string in all other cases, except TryCustomVariants points to some options
+// (e.g. @JSON_OPTIONS[true] for fast instance) and input is a known object or
+// array, either encoded as strict-JSON (i.e. {..} or [..]), or with some
+// extended (e.g. BSON) syntax
+// - this overloaded procedure will make a temporary copy before JSON parsing
+// and return the variant as result
+function JSONToVariant(const JSON: RawUTF8;
+  Options: TDocVariantOptions=[dvoReturnNullForUnknownProperty];
+  AllowDouble: boolean=false): variant;
 
 /// convert an UTF-8 encoded text buffer into a variant number or RawUTF8 varString
 // - first try with GetNumericVariantFromJSON(), then fallback to RawUTF8ToVariant
@@ -23399,7 +23444,7 @@ begin
   result := Buffer;
 end;
 
-function AppendUInt32ToBuffer(Buffer: PUTF8Char; Value: cardinal): PUTF8Char;
+function AppendUInt32ToBuffer(Buffer: PUTF8Char; Value: PtrUInt): PUTF8Char;
 var L: PtrInt;
     P: PAnsiChar;
     tmp: array[0..23] of AnsiChar;
@@ -24525,80 +24570,91 @@ begin
 end;
 
 function IntegerScanIndex(P: PCardinalArray; Count: PtrInt; Value: cardinal): PtrInt;
-var i: PtrInt; // very optimized code for speed
 begin
+  result := 0;
+  dec(Count,4);
   if P<>nil then begin
-    result := 0;
-    for i := 1 to Count shr 2 do // 4 DWORD by loop - aligned read
-      if P^[0]<>Value then
-      if P^[1]<>Value then
-      if P^[2]<>Value then
-      if P^[3]<>Value then begin
-        inc(PByte(P),SizeOf(P^[0])*4);
+    repeat
+      if result>Count then
+        break;
+      if P^[result]<>Value then
+      if P^[result+1]<>Value then
+      if P^[result+2]<>Value then
+      if P^[result+3]<>Value then begin
         inc(result,4);
-      end else begin
-        inc(result,3);
-        exit;
-      end else begin
-        inc(result,2);
-        exit;
-      end else begin
-        inc(result,1);
-        exit;
+        continue;
       end else
-        exit;
-    for i := 0 to (Count and 3)-1 do // last 0..3 DWORD
-      if P^[i]=Value then
+        inc(result,3) else
+        inc(result,2) else
+        inc(result);
+      exit;
+    until false;
+    inc(Count,4);
+    repeat
+      if result>=Count then
+        break;
+      if P^[result]=Value then
         exit else
         inc(result);
+    until false;
   end;
   result := -1;
 end;
 
 function IntegerScan(P: PCardinalArray; Count: PtrInt; Value: cardinal): PCardinal;
-var i: PtrInt;
-begin // very optimized code
-  if P<>nil then begin
-    for i := 1 to Count shr 2 do      // 4 DWORD by loop - aligned read
-      if P^[0]<>Value then
-      if P^[1]<>Value then
-      if P^[2]<>Value then
-      if P^[3]=Value then begin
-        result := @P^[3];
-        exit;
-      end else
-        inc(PByte(P),SizeOf(P^[0])*4) else begin
-        result := @P^[2];
-        exit;
-      end else begin
-        result := @P^[1];
-        exit;
-      end else begin
-        result := pointer(P);
-        exit;
-      end;
-    for i := 0 to (Count and 3)-1 do  // last 0..3 DWORD
-      if P^[i]=Value then begin
-        result := @P^[i];
-        exit;
-      end;
-  end;
+begin
+  result := nil;
+  if P=nil then
+    exit;
+  Count := PtrInt(@P[Count-4]);
+  repeat
+    if PtrUInt(P)>PtrUInt(Count) then
+      break;
+    if P^[0]<>Value then
+    if P^[1]<>Value then
+    if P^[2]<>Value then
+    if P^[3]<>Value then begin
+      P := @P[4];
+      continue;
+    end else
+      result := @P[3] else
+      result := @P[2] else
+      result := @P[1] else
+      result := pointer(P);
+    exit;
+  until false;
+  inc(Count,4*SizeOf(Value));
+  result := pointer(P);
+  repeat
+    if PtrUInt(result)>=PtrUInt(Count) then
+      break;
+    if result^=Value then
+      exit else
+      inc(result);
+  until false;
   result := nil;
 end;
 
 function IntegerScanExists(P: PCardinalArray; Count: PtrInt; Value: cardinal): boolean;
-var i: PtrInt; // very optimized code for speed
 begin
   if P<>nil then begin
     result := true;
-    for i := 1 to (Count shr 2) do   // 4 DWORD by loop - aligned read
-      if (P^[0]=Value) or (P^[1]=Value) or
-         (P^[2]=Value) or (P^[3]=Value) then
-        exit else
-        inc(PByte(P),SizeOf(P^[0])*4);
-    for i := 0 to (Count and 3)-1 do // last 0..3 DWORD
-      if P^[i]=Value then
+    Count := PtrInt(@P[Count-4]);
+    repeat
+      if PtrUInt(P)>PtrUInt(Count) then
+        break;
+      if (P^[0]=Value) or (P^[1]=Value) or (P^[2]=Value) or (P^[3]=Value) then
         exit;
+      P := @P[4];
+    until false;
+    inc(Count,4*SizeOf(Value));
+    repeat
+      if PtrUInt(P)>=PtrUInt(Count) then
+        break;
+      if P^[0]=Value then
+        exit else
+        P := @P[1];
+    until false;
   end;
   result := false;
 end;
@@ -24953,8 +25009,9 @@ begin
 end;
 
 function crc32cfast(crc: cardinal; buf: PAnsiChar; len: cardinal): cardinal;
+{$ifdef ABSOLUTEPASCALORNOTINTEL}
 var tab: ^TCrc32tab;
-begin
+begin // on ARM, we use slicing-by-4 to avoid polluting smaller L1 cache
   tab := @crc32ctab;
   result := not crc;
   if (buf<>nil) and (len>0) then begin
@@ -24983,6 +25040,85 @@ begin
   end;
   result := not result;
 end;
+{$else}
+{$ifdef FPC} nostackframe; assembler; asm {$else} asm .noframe {$endif FPC}
+        {$ifndef win64}
+        mov     r8d, len
+        {$endif}
+        mov     eax, crc
+        xor     ecx, ecx
+        test    buf, buf // buf=rdx/rsi len=r8
+        jz      @z
+        neg     r8
+        jz      @z
+        not     eax
+        lea     r9, [rip + crc32ctab]
+        cmp     r8, -8
+        jb      @head
+@sml:   mov     cl, byte ptr[buf]
+        inc     buf
+        xor     cl, al
+        shr     eax, 8
+        xor     eax, dword ptr[rcx * 4 + r9]
+        inc     r8
+        jnz     @sml
+@0:     not     eax
+@z:     ret
+@head:  test    buf, 7
+        jz      @align
+        mov     cl, byte ptr[buf]
+        inc     buf
+        xor     cl, al
+        shr     eax, 8
+        xor     eax, dword ptr[rcx * 4 + r9]
+        inc     r8
+        jnz     @head
+        not     eax
+        ret
+@align: sub     buf, r8
+        add     r8, 8
+        jg      @done
+        xor     r11, r11
+@by8:   mov     r10d, eax
+        mov     rcx, qword ptr[buf + r8 - 8]
+        xor     r10d, ecx
+        shr     rcx, 32
+        mov     r11b, cl
+        shr     ecx, 8
+        mov     eax, dword ptr[r11 * 4 + r9 + 1024 * 3]
+        mov     r11b, cl
+        shr     ecx, 8
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 2]
+        mov     r11b, cl
+        shr     ecx, 8
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 1]
+        mov     r11b, cl
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 0]
+        mov     ecx, r10d
+        mov     r11b, cl
+        shr     ecx, 8
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 7]
+        mov     r11b, cl
+        shr     ecx, 8
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 6]
+        mov     r11b, cl
+        shr     ecx, 8
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 5]
+        mov     r11b, cl
+        xor     eax, dword ptr[r11 * 4 + r9 + 1024 * 4]
+        add     r8, 8
+        jle     @by8
+@done:  sub     r8, 8
+        jge     @e
+@tail:  mov     cl, byte ptr[buf + r8]
+        xor     cl, al
+        shr     eax, 8
+        xor     eax, dword ptr[rcx * 4 + r9]
+        inc     r8
+        jnz     @tail
+@e:     not     eax
+end;
+{$endif ABSOLUTEPASCALORNOTINTEL}
 
 function ToVarInt32(Value: PtrInt; Dest: PByte): PByte;
 begin // 0=0,1=1,2=-1,3=2,4=-2...
@@ -25117,7 +25253,7 @@ function SortDynArrayAnsiString(const A,B): integer;
 @1:     mov     eax, 1
         ret
 @ne:    jnc     @1
-@less:  or      eax, -1
+@less:  mov     eax, -1
 end; // note: SSE4.2 read up to 16 bytes after buffer, this version won't
 {$else}
 function SortDynArrayInteger(const A,B): integer;
@@ -25830,7 +25966,7 @@ asm // warning: may read up to 15 bytes beyond the string itself
       jz        @max
       test      edx, edx  // Str2='' ?
       jnz       @ok
-      or        eax, -1
+      mov       eax, -1
       ret
 @max: inc       eax
       ret
@@ -26029,95 +26165,73 @@ asm // Delphi is not efficient about compiling above pascal code
 end;
 
 function crc32cfast(crc: cardinal; buf: PAnsiChar; len: cardinal): cardinal;
-asm     // adapted from fast Aleksandr Sharahov version
+asm  // adapted from Aleksandr Sharahov code and Maxim Masiutin remarks
         test    edx, edx
-        jz      @ret
+        jz      @z
         neg     ecx
-        jz      @ret
+        jz      @z
         not     eax
         push    ebx
+        push    ebp
+        lea     ebp, [crc32ctab]
 @head:  test    dl, 3
-        jz      @aligned
-        movzx   ebx, byte[edx]
+        jz      @align
+        movzx   ebx, byte ptr[edx]
         inc     edx
         xor     bl, al
         shr     eax, 8
-        xor     eax, dword ptr[ebx * 4 + crc32ctab]
+        xor     eax, dword ptr[ebx * 4 + ebp]
         inc     ecx
         jnz     @head
+        pop     ebp
         pop     ebx
         not     eax
-        ret
-@ret:   rep     ret
-@aligned:
-        sub     edx, ecx
+@z:     ret
+@align: sub     edx, ecx
         add     ecx, 8
-        jg      @bodydone
+        jg      @done
         push    esi
         push    edi
         mov     edi, edx
-        mov     edx, eax
-@bodyloop:
+@by8:   mov     edx, eax
         mov     ebx, [edi + ecx - 4]
         xor     edx, [edi + ecx - 8]
         movzx   esi, bl
-        mov     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 3]
+        mov     eax, dword ptr[esi * 4 + ebp + 1024 * 3]
         movzx   esi, bh
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 2]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 2]
         shr     ebx, 16
         movzx   esi, bl
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 1]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 1]
         movzx   esi, bh
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 0]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 0]
         movzx   esi, dl
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 7]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 7]
         movzx   esi, dh
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 6]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 6]
         shr     edx, 16
         movzx   esi, dl
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 5]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 5]
         movzx   esi, dh
-        xor     eax, dword ptr[esi * 4 + crc32ctab + 1024 * 4]
+        xor     eax, dword ptr[esi * 4 + ebp + 1024 * 4]
         add     ecx, 8
-        jg      @done
-        mov     ebx, [edi + ecx - 4]
-        xor     eax, [edi + ecx - 8]
-        movzx   esi, bl
-        mov     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 3]
-        movzx   esi, bh
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 2]
-        shr     ebx, 16
-        movzx   esi, bl
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 1]
-        movzx   esi, bh
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 0]
-        movzx   esi, al
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 7]
-        movzx   esi, ah
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 6]
-        shr     eax, 16
-        movzx   esi, al
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 5]
-        movzx   esi, ah
-        xor     edx, dword ptr[esi * 4 + crc32ctab + 1024 * 4]
-        add     ecx, 8
-        jle     @bodyloop
-        mov     eax, edx
-@done:  mov     edx, edi
+        jle     @by8
+        mov     edx, edi
         pop     edi
         pop     esi
-@bodydone:
-        sub     ecx, 8
+@done:  sub     ecx, 8
         jl      @tail
+        pop     ebp
         pop     ebx
         not     eax
         ret
 @tail:  movzx   ebx, byte[edx + ecx]
         xor     bl, al
         shr     eax, 8
-        xor     eax, dword ptr[ebx * 4 + crc32ctab]
+        xor     eax, dword ptr[ebx * 4 + ebp]
         inc     ecx
         jnz     @tail
+@e:     pop     ebp
         pop     ebx
         not     eax
 end;
@@ -26309,11 +26423,10 @@ asm
         mov     edx, [edx]
         xor     eax, eax
         cmp     ecx, edx
-        je      @0
-        jg      @1
-        dec     eax
-@0:     ret
-@1:     inc     eax
+        setl    cl
+        setg    al
+        movzx   ecx, cl
+        sub     eax, ecx
 end;
 function SortDynArrayCardinal(const A,B): integer;
 asm
@@ -26342,7 +26455,7 @@ asm // Delphi x86 compiler is not efficient at compiling Int64 comparisons
         cmp     ecx, [edx]
         jz      @0
         jnb     @p
-@n:     or      eax, -1
+@n:     mov     eax, -1
         ret
 @0:     xor     eax, eax
         ret
@@ -26358,7 +26471,7 @@ asm // Delphi x86 compiler is not efficient, and oldest even incorrect
         cmp     ecx, [edx]
         jz      @0
 @nz:    jnb     @p
-        or      eax, -1
+        mov     eax, -1
         ret
 @0:     xor     eax, eax
         ret
@@ -26413,12 +26526,12 @@ asm // x86 version optimized for AnsiString/RawUTF8/RawByteString types
         cmp     [eax - 4], edx
         je      @0
 @no:    jnc     @1
-        or      eax, -1
+        mov     eax, -1
         ret
 @n0:    cmp     eax, [edx - 4]
         je      @0
         jnc     @1
-        or      eax, -1
+        mov     eax, -1
         ret
 @0:     xor     eax, eax
         ret
@@ -26444,7 +26557,7 @@ asm
         sahf
         jz      @0
 @nz:    jnb     @p
-        or      eax, -1
+        mov     eax, -1
         ret
 @0:     xor     eax, eax
         ret
@@ -26458,7 +26571,7 @@ asm
         sahf
         jz      @0
 @nz:    jnb     @p
-        or      eax, -1
+        mov     eax, -1
         ret
 @0:     xor     eax, eax
         ret
@@ -27963,7 +28076,7 @@ asm // fast 8 bits WinAnsi comparison using the NormToUpper[] array
 @z:     cmp     ebx, ecx // S1=S2?
         jz      @2b
         pop     ebx
-@4:     or      eax, -1 // return -1 (S1<S2)
+@4:     mov     eax, -1 // return -1 (S1<S2)
 end;
 {$endif PUREPASCAL}
 
@@ -29858,12 +29971,13 @@ begin
 end;
 
 function RawUTF8DynArrayEquals(const A,B: TRawUTF8DynArray): boolean;
-var i: integer;
+var n,i: integer;
 begin
   result := false;
-  if length(A)<>length(B) then
+  n := length(A);
+  if n<>length(B) then
     exit;
-  for i := 0 to high(A) do
+  for i := 0 to n-1 do
     if A[i]<>B[i] then
       exit;
   result := true;
@@ -29885,7 +29999,7 @@ var i: Integer;
 begin
   Finalize(result);
   SetLength(Result,length(Source));
-  for i := 0 to high(Source) do
+  for i := 0 to length(Source)-1 do
     StringToUTF8(Source[i],Result[i]);
 end;
 
@@ -30959,7 +31073,7 @@ begin
   if masks<>nil then begin
     if SortByName then
       QuickSortRawUTF8(masks,length(masks),nil,{$ifdef MSWINDOWS}@StrIComp{$else}@StrComp{$endif});
-    for m := 0 to high(masks) do begin // masks[] recursion
+    for m := 0 to length(masks)-1 do begin // masks[] recursion
       masked := FindFiles(Directory,UTF8ToString(masks[m]),
         IgnoreFileName,SortByName,IncludesDir,SubFolder);
       da.AddArray(masked);
@@ -31169,50 +31283,60 @@ begin
 end;
 
 function Int64ScanExists(P: PInt64Array; Count: PtrInt; const Value: Int64): boolean;
-var i: PtrInt;
 begin
   if P<>nil then begin
     result := true;
-    for i := 1 to (Count shr 2) do   // 4 QWORD by loop - aligned read
-      if (P^[0]=Value) or (P^[1]=Value) or
-         (P^[2]=Value) or (P^[3]=Value) then
-        exit else
-        inc(PByte(P),SizeOf(P^[0])*4);
-    for i := 0 to (Count and 3)-1 do // last 0..3 QWORD
-      if P^[i]=Value then
+    Count := PtrInt(@P[Count-4]);
+    repeat
+      if PtrUInt(P)>PtrUInt(Count) then
+        break;
+      if (P^[0]=Value) or (P^[1]=Value) or (P^[2]=Value) or (P^[3]=Value) then
         exit;
+      P := @P[4];
+    until false;
+    inc(Count,4*SizeOf(Value));
+    repeat
+      if PtrUInt(P)>=PtrUInt(Count) then
+        break;
+      if P^[0]=Value then
+        exit else
+        P := @P[1];
+    until false;
   end;
   result := false;
 end;
 
 function Int64Scan(P: PInt64Array; Count: PtrInt; const Value: Int64): PInt64;
-var i: PtrInt;
 begin
-  if P<>nil then begin
-    for i := 1 to Count shr 2 do      // 4 QWORD by loop - aligned read
-      if P^[0]<>Value then
-      if P^[1]<>Value then
-      if P^[2]<>Value then
-      if P^[3]=Value then begin
-        result := @P^[3];
-        exit;
-      end else
-        inc(PByte(P),SizeOf(P^[0])*4) else begin
-        result := @P^[2];
-        exit;
-      end else begin
-        result := @P^[1];
-        exit;
-      end else begin
-        result := pointer(P);
-        exit;
-      end;
-    for i := 0 to (Count and 3)-1 do  // last 0..3 QWORD
-      if P^[i]=Value then begin
-        result := @P^[i];
-        exit;
-      end;
-  end;
+  result := nil;
+  if P=nil then
+    exit;
+  Count := PtrInt(@P[Count-4]);
+  repeat
+    if PtrUInt(P)>PtrUInt(Count) then
+      break;
+    if P^[0]<>Value then
+    if P^[1]<>Value then
+    if P^[2]<>Value then
+    if P^[3]<>Value then begin
+      P := @P[4];
+      continue;
+    end else
+      result := @P[3] else
+      result := @P[2] else
+      result := @P[1] else
+      result := pointer(P);
+    exit;
+  until false;
+  inc(Count,4*SizeOf(Value));
+  result := pointer(P);
+  repeat
+    if PtrUInt(result)>=PtrUInt(Count) then
+      break;
+    if result^=Value then
+      exit else
+      inc(result);
+  until false;
   result := nil;
 end;
 
@@ -31846,32 +31970,41 @@ begin
 end;
 
 function Int64ScanIndex(P: PInt64Array; Count: PtrInt; const Value: Int64): PtrInt;
-var i: PtrInt; // optimized code for speed
 begin
+  result := 0;
+  dec(Count,8);
   if P<>nil then begin
-    result := 0;
-    for i := 1 to Count shr 2 do // 4 PtrUInt by loop - aligned read
-      if P^[0]<>Value then
-      if P^[1]<>Value then
-      if P^[2]<>Value then
-      if P^[3]<>Value then begin
-        inc(PByte(P),SizeOf(P^[0])*4);
-        inc(result,4);
-      end else begin
-        inc(result,3);
-        exit;
-      end else begin
-        inc(result,2);
-        exit;
-      end else begin
-        inc(result,1);
-        exit;
+    repeat
+      if result>Count then
+        break;
+      if P^[result]<>Value then
+      if P^[result+1]<>Value then
+      if P^[result+2]<>Value then
+      if P^[result+3]<>Value then
+      if P^[result+4]<>Value then
+      if P^[result+5]<>Value then
+      if P^[result+6]<>Value then
+      if P^[result+7]<>Value then begin
+        inc(result,8);
+        continue;
       end else
-        exit;
-    for i := 0 to (Count and 3)-1 do // last 0..3 Int64
-      if P^[i]=Value then
+        inc(result,7) else
+        inc(result,6) else
+        inc(result,5) else
+        inc(result,4) else
+        inc(result,3) else
+        inc(result,2) else
+        inc(result);
+      exit;
+    until false;
+    inc(Count,8);
+    repeat
+      if result>=Count then
+        break;
+      if P^[result]=Value then
         exit else
         inc(result);
+    until false;
   end;
   result := -1;
 end;
@@ -31911,26 +32044,38 @@ asm // identical to IntegerScanIndex() asm stub
 end;
 {$endif HASINLINE}
 
-function ByteScanIndex(P: PByteArray; Count: PtrInt; Value: Byte): integer;
+function ByteScanIndex(P: PByteArray; Count: PtrInt; Value: Byte): PtrInt;
 begin
 {$ifdef FPC}
   result := IndexByte(P^,Count,Value); // will use fast FPC SSE version
 {$else}
-  for result := 0 to Count-1 do
-    if P^[result]=Value then
-      exit;
+  result := 0;
+  if P<>nil then
+    repeat
+      if result>=Count then
+        break;
+      if P^[result]=Value then
+        exit else
+        inc(result);
+    until false;
   result := -1;
 {$endif FPC}
 end;
 
-function WordScanIndex(P: PWordArray; Count: PtrInt; Value: word): integer;
+function WordScanIndex(P: PWordArray; Count: PtrInt; Value: word): PtrInt;
 begin
 {$ifdef FPC}
   result := IndexWord(P^,Count,Value); // will use fast FPC SSE version
 {$else}
-  for result := 0 to Count-1 do
-    if P^[result]=Value then
-      exit;
+  result := 0;
+  if P<>nil then
+    repeat
+      if result>=Count then
+        break;
+      if P^[result]=Value then
+        exit else
+        inc(result);
+    until false;
   result := -1;
 {$endif FPC}
 end;
@@ -31939,8 +32084,8 @@ function AnyScanIndex(P,Elem: pointer; Count,ElemSize: PtrInt): PtrInt;
 begin
   case ElemSize of
     // optimized versions for arrays of byte,word,integer,Int64,Currency,Double
-    1: result := {$ifdef FPC}IndexByte(P^{$else}ByteScanIndex(P{$endif},Count,PByte(Elem)^);
-    2: result := {$ifdef FPC}IndexWord(P^{$else}WordScanIndex(P{$endif},Count,PWord(Elem)^);
+    1: result := ByteScanIndex(P,Count,PByte(Elem)^);
+    2: result := WordScanIndex(P,Count,PWord(Elem)^);
     4: result := IntegerScanIndex(P,Count,PInteger(Elem)^);
     8: result := Int64ScanIndex(P,Count,PInt64(Elem)^);
     // small ElemSize version (<SizeOf(PtrInt))
@@ -31953,13 +32098,50 @@ begin
     end;
   else begin // generic binary comparison (fast with inlined CompareMemFixed)
     for result := 0 to Count-1 do
-      if CompareMemFixed(P,Elem,ElemSize) then
+      if (PInt64(P)^=PInt64(Elem)^) and
+         CompareMemSmall(PAnsiChar(P)+8,PAnsiChar(Elem)+8,ElemSize-8) then
         exit else
         inc(PByte(P),ElemSize);
     result := -1;
   end;
   end;
 end;
+
+function AnyScanExists(P,Elem: pointer; Count,ElemSize: PtrInt): boolean;
+begin
+  case ElemSize of
+    // optimized versions for arrays of byte,word,integer,Int64,Currency,Double
+    1: result := ByteScanIndex(P,Count,PInteger(Elem)^)>=0;
+    2: result := WordScanIndex(P,Count,PInteger(Elem)^)>=0;
+    4: result := IntegerScanExists(P,Count,PInteger(Elem)^);
+    8: result := Int64ScanExists(P,Count,PInt64(Elem)^);
+    // small ElemSize version (<SizeOf(PtrInt))
+    3{$ifdef CPU64},5..7{$endif}: begin
+      result := true;
+      if Count>0 then
+        repeat
+          if CompareMemSmall(P,Elem,ElemSize) then
+            exit;
+          inc(PByte(P),ElemSize);
+          dec(Count);
+        until Count=0;
+      result := false;
+    end;
+  else begin // generic binary comparison (fast with leading 64-bit comparison)
+    result := true;
+    if Count>0 then
+      repeat
+        if (PInt64(P)^=PInt64(Elem)^) and
+           CompareMemSmall(PAnsiChar(P)+8,PAnsiChar(Elem)+8,ElemSize-8) then
+          exit;
+        inc(PByte(P),ElemSize);
+        dec(Count);
+      until Count=0;
+    result := false;
+  end;
+  end;
+end;
+
 
 procedure QuickSortInteger(ID: PIntegerArray; L,R: PtrInt);
 var I, J, P: PtrInt;
@@ -32242,6 +32424,27 @@ begin
 end;
 
 function FastFindIntegerSorted(P: PIntegerArray; R: PtrInt; Value: integer): PtrInt;
+{$ifdef CPUX64} // P=rcx/rdi R=rdx/rsi Value=r8d/edx
+{$ifdef FPC} assembler; nostackframe; asm {$else} asm .noframe {$endif}
+        xor     r9, r9  // r9=L rax=result
+        test    R, R
+        jl      @ko
+        lea     rax, [r9 + R]
+{$ifdef FPC} align 8 {$else} .align 8 {$endif}
+@s:     shr     rax, 1
+        lea     r10, qword ptr[rax - 1]  // efficient branchless binary search
+        lea     r11, qword ptr[rax + 1]
+        cmp     Value, dword ptr[P + rax * 4]
+        je      @ok
+        cmovl   R, r10
+        cmovg   r9, r11
+        lea     rax, [r9 + R]
+        cmp     r9, R
+        jle     @s
+@ko:    or      rax, -1
+@ok:
+end;
+{$else}
 var L: PtrInt;
     cmp: integer;
 begin
@@ -32265,6 +32468,8 @@ begin
     until false;
   result := -1
 end;
+{$endif CPUX64}
+
 
 function FastFindIntegerSorted(const Values: TIntegerDynArray; Value: integer): PtrInt;
 begin
@@ -32272,6 +32477,27 @@ begin
 end;
 
 function FastFindInt64Sorted(P: PInt64Array; R: PtrInt; const Value: Int64): PtrInt;
+{$ifdef CPUX64} // P=rcx/rdi R=rdx/rsi Value=r8d/edx
+{$ifdef FPC} assembler; nostackframe; asm {$else} asm .noframe {$endif}
+        xor     r9, r9  // r9=L rax=result
+        test    R, R
+        jl      @ko
+        lea     rax, [r9 + R]
+{$ifdef FPC} align 8 {$else} .align 8 {$endif}
+@s:     shr     rax, 1
+        lea     r10, qword ptr[rax - 1]  // efficient branchless binary search
+        lea     r11, qword ptr[rax + 1]
+        cmp     Value, qword ptr[P + rax * 8]
+        je      @ok
+        cmovl   R, r10
+        cmovg   r9, r11
+        lea     rax, [r9 + R]
+        cmp     r9, R
+        jle     @s
+@ko:    or      rax, -1
+@ok:
+end;
+{$else}
 var L: PtrInt;
     {$ifdef CPUX86}
     cmp: Integer;
@@ -32291,7 +32517,7 @@ begin
         break;
       end;
       {$else} // circumvent Int64 comparison slowness
-      cmp := SortDynArrayInt64(P^[result],Value);
+      cmp := {$ifdef HASINLINE}CompareInt64{$else}SortDynArrayInt64{$endif}(P^[result],Value);
       if cmp=0 then
         exit else
       if cmp<0 then begin
@@ -32308,6 +32534,7 @@ begin
     until false;
   result := -1
 end;
+{$endif CPUX64}
 
 function FastFindQWordSorted(P: PQWordArray; R: PtrInt; const Value: QWord): PtrInt;
 var L: PtrInt;
@@ -32450,7 +32677,7 @@ const MinInt = -MaxInt-1;
 begin
   Finalize(result);
   SetLength(result,length(Values));
-  for i := 0 to high(Values) do
+  for i := 0 to length(Values)-1 do
     if Values[i]>MaxInt then
       if raiseExceptionOnOverflow then
         raise ESynException.CreateUTF8('TIntegerDynArrayFrom64: Values[%]=%>%',
@@ -32469,7 +32696,7 @@ var i: PtrInt;
 begin
   Finalize(result);
   SetLength(result,length(Values));
-  for i := 0 to high(Values) do
+  for i := 0 to length(Values)-1 do
     result[i] := Values[i];
 end;
 
@@ -32478,7 +32705,7 @@ var i: PtrInt;
 begin
   Finalize(result);
   SetLength(result,length(Values));
-  for i := 0 to high(Values) do
+  for i := 0 to length(Values)-1 do
     result[i] := Values[i];
 end;
 
@@ -34692,7 +34919,7 @@ begin
       AddString(URIName);
       if (JSONDecode(ParametersJSON,Params,true)<>nil) and (Params<>nil) then begin
         sep := '?';
-        for i := 0 to High(Params) do
+        for i := 0 to length(Params)-1 do
         with Params[i] do begin
           for j := 0 to high(PropNamesToIgnore) do
             if IdemPropNameU(PropNamesToIgnore[j],Name,NameLen) then begin
@@ -35972,7 +36199,7 @@ begin
           mov     rax, data128
           mov     rdx, crc128
           mov     ecx, count
-          mov     r8d, dword ptr [rdx]
+          mov     r8d, dword ptr [rdx] // we can't use qword ptr here
           mov     r9d, dword ptr [rdx + 4]
           mov     r10d, dword ptr [rdx + 8]
           mov     r11d, dword ptr [rdx + 12]
@@ -36003,15 +36230,9 @@ end;
 {$ifdef CPUINTEL}
 function crc32cBy4SSE42(crc, value: cardinal): cardinal;
 {$ifdef CPU64} {$ifdef FPC}nostackframe; assembler; asm {$else}
-asm .noframe // rcx=crc, rdx=value(Linux: rdi,rsi)
-{$endif FPC}
-        {$ifdef Linux}
-        mov     eax, edi
-        crc32   eax, esi
-        {$else}
-        mov     eax, ecx
-        crc32   eax, edx
-        {$endif}
+asm .noframe {$endif FPC}
+        mov     eax, crc
+        crc32   eax, value
 end;
 {$else} {$ifdef FPC}nostackframe; assembler;{$endif}
 asm // eax=crc, edx=value
@@ -36027,33 +36248,18 @@ procedure crcblockSSE42(crc128, data128: PBlock128);
 {$ifdef CPU64} {$ifdef FPC}nostackframe; assembler; asm {$else}
 asm .noframe // rcx=crc128, rdx=data128 (Linux: rdi,rsi)
 {$endif FPC}
-        {$ifdef Linux}
-        mov     eax, dword ptr[rdi]
-        mov     r8d, dword ptr[rdi + 4]
-        mov     r9d, dword ptr[rdi + 8]
-        mov     r10d, dword ptr[rdi + 12]
-        crc32   eax, dword ptr[rsi]
-        crc32   r8d, dword ptr[rsi + 4]
-        crc32   r9d, dword ptr[rsi + 8]
-        crc32   r10d, dword ptr[rsi + 12]
-        mov     dword ptr[rdi], eax
-        mov     dword ptr[rdi + 4], r8d
-        mov     dword ptr[rdi + 8], r9d
-        mov     dword ptr[rdi + 12], r10d
-        {$else}
-        mov     eax, dword ptr[rcx]
-        mov     r8d, dword ptr[rcx + 4]
-        mov     r9d, dword ptr[rcx + 8]
-        mov     r10d, dword ptr[rcx + 12]
-        crc32   eax, dword ptr[rdx]
-        crc32   r8d, dword ptr[rdx + 4]
-        crc32   r9d, dword ptr[rdx + 8]
-        crc32   r10d, dword ptr[rdx + 12]
-        mov     dword ptr[rcx], eax
-        mov     dword ptr[rcx + 4], r8d
-        mov     dword ptr[rcx + 8], r9d
-        mov     dword ptr[rcx + 12], r10d
-        {$endif Linux}
+        mov     eax, dword ptr[crc128] // we can't use two qword ptr here
+        mov     r8d, dword ptr[crc128 + 4]
+        mov     r9d, dword ptr[crc128 + 8]
+        mov     r10d, dword ptr[crc128 + 12]
+        crc32   eax, dword ptr[data128]
+        crc32   r8d, dword ptr[data128 + 4]
+        crc32   r9d, dword ptr[data128 + 8]
+        crc32   r10d, dword ptr[data128 + 12]
+        mov     dword ptr[crc128], eax
+        mov     dword ptr[crc128 + 4], r8d
+        mov     dword ptr[crc128 + 8], r9d
+        mov     dword ptr[crc128 + 12], r10d
 end;
 {$else} {$ifdef FPC}nostackframe; assembler;{$endif}
 asm // eax=crc128, edx=data128
@@ -36254,8 +36460,7 @@ end;
 function IsZero(const dig: THash128): boolean;
 var a: TPtrIntArray absolute dig;
 begin
-  result := (a[0]=0) and (a[1]=0)
-     {$ifndef CPU64} and (a[2]=0) and (a[3]=0){$endif};
+  result := a[0] or a[1] {$ifndef CPU64}or a[2] or a[3]{$endif} = 0;
 end;
 
 function IsEqual(const A,B: THash128): boolean;
@@ -36267,9 +36472,10 @@ begin // uses anti-forensic time constant "xor/or" pattern
 end;
 
 procedure FillZero(out dig: THash128);
+var d: TInt64Array absolute dig;
 begin
-  PInt64Array(@dig)^[0] := 0;
-  PInt64Array(@dig)^[1] := 0;
+  d[0] := 0;
+  d[1] := 0;
 end;
 
 function HashFound(P: PHash128Rec; Count: integer; const h: THash128Rec): boolean;
@@ -36328,7 +36534,7 @@ end;
 function IsZero(const dig: THash160): boolean;
 var a: TIntegerArray absolute dig;
 begin
-  result := (a[0]=0) and (a[1]=0) and (a[2]=0) and (a[3]=0) and (a[4]=0);
+  result := a[0] or a[1] or a[2] or a[3] or a[4] = 0;
 end;
 
 function IsEqual(const A,B: THash160): boolean;
@@ -36365,9 +36571,8 @@ end;
 function IsZero(const dig: THash256): boolean;
 var a: TPtrIntArray absolute dig;
 begin
-  result := (a[0]=0) and (a[1]=0) and (a[2]=0) and (a[3]=0)
-     {$ifndef CPU64} and (a[4]=0) and (a[5]=0)
-                     and (a[6]=0) and (a[7]=0){$endif};
+  result := a[0] or a[1] or a[2] or a[3]
+     {$ifndef CPU64} or a[4] or a[5] or a[6] or a[7]{$endif} = 0;
 end;
 
 function IsEqual(const A,B: THash256): boolean;
@@ -36381,19 +36586,19 @@ begin // uses anti-forensic time constant "xor/or" pattern
 end;
 
 procedure FillZero(out dig: THash256);
+var d: TInt64Array absolute dig;
 begin
-  PInt64Array(@dig)^[0] := 0;
-  PInt64Array(@dig)^[1] := 0;
-  PInt64Array(@dig)^[2] := 0;
-  PInt64Array(@dig)^[3] := 0;
+  d[0] := 0;
+  d[1] := 0;
+  d[2] := 0;
+  d[3] := 0;
 end;
 
 function IsZero(const dig: THash384): boolean;
 var a: TPtrIntArray absolute dig;
 begin
-  result := (a[0]=0) and (a[1]=0) and (a[2]=0) and (a[3]=0) and (a[4]=0) and (a[5]=0)
-     {$ifndef CPU64} and (a[6]=0) and (a[7]=0) and (a[8]=0)
-                     and (a[9]=0) and (a[10]=0) and (a[11]=0){$endif};
+  result := a[0] or a[1] or a[2] or a[3] or a[4] or a[5]
+     {$ifndef CPU64} or a[6] or a[7] or a[8] or a[9] or a[10] or a[11] {$endif} = 0;
 end;
 
 function IsEqual(const A,B: THash384): boolean;
@@ -36409,22 +36614,21 @@ begin // uses anti-forensic time constant "xor/or" pattern
 end;
 
 procedure FillZero(out dig: THash384);
+var d: TInt64Array absolute dig;
 begin
-  PInt64Array(@dig)^[0] := 0;
-  PInt64Array(@dig)^[1] := 0;
-  PInt64Array(@dig)^[2] := 0;
-  PInt64Array(@dig)^[3] := 0;
-  PInt64Array(@dig)^[4] := 0;
-  PInt64Array(@dig)^[5] := 0;
+  d[0] := 0;
+  d[1] := 0;
+  d[2] := 0;
+  d[3] := 0;
+  d[4] := 0;
+  d[5] := 0;
 end;
 
 function IsZero(const dig: THash512): boolean;
 var a: TPtrIntArray absolute dig;
 begin
-  result := (a[0]=0) and (a[1]=0) and (a[2]=0) and (a[3]=0) and
-            (a[4]=0) and (a[5]=0) and (a[6]=0) and (a[7]=0)
-     {$ifndef CPU64} and (a[8]=0) and (a[9]=0) and (a[10]=0) and (a[11]=0) and
-            (a[12]=0) and (a[13]=0) and (a[14]=0) and (a[15]=0){$endif};
+  result := a[0] or a[1] or a[2] or a[3] or a[4] or a[5] or a[6] or a[7] {$ifndef CPU64}
+    or a[8] or a[9] or a[10] or a[11] or a[12] or a[13]  or a[14] or a[15] {$endif} = 0;
 end;
 
 function IsEqual(const A,B: THash512): boolean;
@@ -36442,15 +36646,16 @@ begin // uses anti-forensic time constant "xor/or" pattern
 end;
 
 procedure FillZero(out dig: THash512);
+var d: TInt64Array absolute dig;
 begin
-  PInt64Array(@dig)^[0] := 0;
-  PInt64Array(@dig)^[1] := 0;
-  PInt64Array(@dig)^[2] := 0;
-  PInt64Array(@dig)^[3] := 0;
-  PInt64Array(@dig)^[4] := 0;
-  PInt64Array(@dig)^[5] := 0;
-  PInt64Array(@dig)^[6] := 0;
-  PInt64Array(@dig)^[7] := 0;
+  d[0] := 0;
+  d[1] := 0;
+  d[2] := 0;
+  d[3] := 0;
+  d[4] := 0;
+  d[5] := 0;
+  d[6] := 0;
+  d[7] := 0;
 end;
 
 procedure crc512c(buf: PAnsiChar; len: cardinal; out crc: THash512);
@@ -38667,7 +38872,7 @@ var i: integer;
 begin
   if fIDs=nil then begin
     fIDs := TStringList.Create;
-    for i := 0 to high(fZone) do
+    for i := 0 to length(fZone)-1 do
       fIDs.Add(UTF8ToString(fZone[i].id));
   end;
   result := fIDs;
@@ -38678,7 +38883,7 @@ var i: integer;
 begin
   if fDisplays=nil then begin
     fDisplays := TStringList.Create;
-    for i := 0 to high(fZone) do
+    for i := 0 to length(fZone)-1 do
       fDisplays.Add(UTF8ToString(fZone[i].Display));
   end;
   result := fDisplays;
@@ -40024,8 +40229,111 @@ begin // fast O(log(n)) binary search
 end;
 
 function FastFindPUTF8CharSorted(P: PPUTF8CharArray; R: PtrInt; Value: PUTF8Char): PtrInt;
+{$ifdef CPUX64} // P=rcx/rdi R=rdx/rsi Value=r8/rdx
+{$ifdef FPC} assembler; nostackframe; asm {$else} asm .noframe {$endif}
+        {$ifdef win64}
+        push    rdi
+        mov     rdi, P  // P=rdi
+        {$endif}
+        push    r12
+        push    r13
+        xor     r9, r9  // L=r9
+        test    R, R
+        jl      @err
+        test    Value, Value
+        jz      @void
+        mov     cl, byte ptr[Value]  // to check first char (likely diverse)
+@s:     lea     rax, qword ptr[r9 + R]
+        shr     rax, 1
+        lea     r12, qword ptr[rax - 1]  // branchless main loop
+        lea     r13, qword ptr[rax + 1]
+        mov     r10, qword ptr[rdi + rax * 8]
+        test    r10, r10
+        jz      @lt
+        cmp     cl, byte ptr[r10]
+        je      @eq
+        cmovc   R, r12
+        cmovnc  r9, r13
+@nxt:   cmp     r9, R
+        jle     @s
+@err:   or      rax, -1
+@found: pop     r13
+        pop     r12
+        {$ifdef win64}
+        pop     rdi
+        {$endif}
+        ret
+@lt:    mov     r9, r13 // very unlikely P[rax]=nil
+        jmp     @nxt
+@eq:    mov     r11, Value
+@sub:   mov     cl, byte ptr[r10]
+        inc     r10
+        inc     r11
+        test    cl, cl
+        jz      @found
+        mov     cl, byte ptr[r11]
+        cmp     cl, byte ptr[r10]
+        je      @sub
+        mov     cl, byte ptr[Value]  // reset first char
+        cmovc   R, r12
+        cmovnc  r9, r13
+        cmp     r9, R
+        jle     @s
+        jmp     @err
+@void:  or      rax, -1
+        cmp     qword ptr[P], 0
+        cmove   rax, Value
+        jmp     @found
+end;
+{$else}
+var L: PtrInt;
+    c: byte;
+    piv,val: PByte;
+begin // fast O(log(n)) binary search using inlined StrCompFast()
+  if R>=0 then
+    if Value<>nil then begin
+      L := 0;
+      repeat
+        result := (L+R) shr 1;
+        piv := pointer(P^[result]);
+        if piv<>nil then begin
+          val := pointer(Value);
+          c := piv^;
+          if c=val^ then
+            repeat
+              if c=0 then
+                exit;  // StrComp(P^[result],Value)=0
+              inc(piv);
+              inc(val);
+              c := piv^;
+            until c<>val^;
+          if c>val^ then begin
+            R := result-1;  // StrComp(P^[result],Value)>0
+            if L<=R then
+              continue;
+            break;
+          end;
+        end;
+        L := result+1;  // StrComp(P^[result],Value)<0
+        if L<=R then
+          continue;
+        break;
+      until false;
+    end else
+    if P^[0]=nil then begin // '' should be in lowest P[] slot
+      result := 0;
+      exit;
+    end;
+  result := -1;
+end;
+{$endif CPUX64}
+
+function FastFindUpperPUTF8CharSorted(P: PPUTF8CharArray; R: PtrInt;
+  Value: PUTF8Char; ValueLen: PtrInt): PtrInt;
+var tmp: array[byte] of AnsiChar;
 begin
-  result := FastFindPUTF8CharSorted(P,R,Value,TUTF8Compare(@StrComp));
+  UpperCopy255Buf(@tmp,Value,ValueLen);
+  result := FastFindPUTF8CharSorted(P,R,@tmp);
 end;
 
 function FastFindIndexedPUTF8Char(P: PPUTF8CharArray; R: PtrInt;
@@ -40833,6 +41141,33 @@ begin
 end;
 
 function FastFindWordSorted(P: PWordArray; R: PtrInt; Value: Word): PtrInt;
+{$ifdef CPUX64} // P=rcx/rdi R=rdx/rsi Value=r8w/dx
+{$ifdef FPC} assembler; nostackframe; asm {$else} asm .noframe {$endif}
+        {$ifdef win64}
+        push    rdi
+        mov     rdi, P  // rdi=P
+        {$endif}
+        xor     r9, r9  // r9=L rax=result
+        test    R, R
+        jl      @ko
+{$ifdef FPC} align 8 {$else} .align 8 {$endif}
+@s:     lea     rax, [r9 + R]
+        shr     rax, 1
+        lea     r10, qword ptr[rax - 1] // branchless loop
+        lea     r11, qword ptr[rax + 1]
+        movzx   ecx, word ptr[rdi + rax * 2]
+        cmp     cx, Value
+        je      @ok
+        cmovg   R, r10
+        cmovl   r9, r11
+        cmp     r9, R
+        jle     @s
+@ko:    or      rax, -1
+@ok:    {$ifdef win64}
+        pop     rdi
+        {$endif}
+end;
+{$else}
 var L: PtrInt;
     cmp: integer;
 begin
@@ -40856,6 +41191,7 @@ begin
     until false;
   result := -1
 end;
+{$endif CPUX64}
 
 function TSortedWordArray.Add(aValue: Word): PtrInt;
 begin
@@ -44150,7 +44486,7 @@ end;
 procedure TJSONCustomParserRTTI.ComputeFullPropertyName;
 var i: PtrInt;
 begin
-  for i := 0 to high(NestedProperty) do begin
+  for i := 0 to length(NestedProperty)-1 do begin
     NestedProperty[i].ComputeFullPropertyName;
     if fFullPropertyName<>'' then
       NestedProperty[i].fFullPropertyName :=
@@ -44163,7 +44499,7 @@ var i: PtrInt;
 begin
   assert(fNestedDataSize=0);
   fNestedDataSize := 0;
-  for i := 0 to high(NestedProperty) do begin
+  for i := 0 to length(NestedProperty)-1 do begin
     NestedProperty[i].ComputeDataSizeAfterAdd;
     inc(fNestedDataSize,NestedProperty[i].fDataSize);
     if fFullPropertyName<>'' then
@@ -44193,7 +44529,7 @@ begin
     ComputeNestedDataSize;
     case PropertyType of
     ptRecord:
-      for i := 0 to high(NestedProperty) do
+      for i := 0 to length(NestedProperty)-1 do
         inc(fDataSize,NestedProperty[i].fDataSize);
     //ptCustom: fDataSize already set in TJSONCustomParserCustom.Create()
     else
@@ -45864,20 +46200,22 @@ begin
 end;
 
 
-var
-  SynVariantTypes: TObjectList = nil;
+var // released as TCustomVariantType
+  SynVariantTypes: array of TSynInvokeableVariantType;
 
 function FindSynVariantType(aVarType: Word; out CustomType: TSynInvokeableVariantType): boolean;
 var i: integer;
+    t: ^TSynInvokeableVariantType;
 begin
-  if SynVariantTypes<>nil then begin
-    for i := 0 to SynVariantTypes.Count-1 do
-      if TSynInvokeableVariantType(SynVariantTypes.List[i]).VarType=aVarType then begin
-        CustomType := TSynInvokeableVariantType(SynVariantTypes.List[i]);
+  t := pointer(SynVariantTypes);
+  if t<>nil then
+    for i := 1 to PDynArrayRec(PtrInt(t)-SizeOf(TDynArrayRec))^.length do
+      if t^.VarType=aVarType then begin
+        CustomType := t^;
         result := true;
         exit;
-      end;
-  end;
+      end else
+      inc(t);
   result := false;
 end;
 
@@ -45885,62 +46223,67 @@ procedure GetJSONToAnyVariant(var Value: variant; var JSON: PUTF8Char;
   EndOfObject: PUTF8Char; Options: PDocVariantOptions; AllowDouble: boolean);
 // internal method used by VariantLoadJSON(), GetVariantFromJSON() and
 // TDocVariantData.InitJSON()
-var wasString: boolean;
-  procedure ProcessSimple(Val: PUTF8Char); {$ifdef FPC}inline;{$endif}
+  procedure ProcessField;
+  var val: PUTF8Char;
+      wasString: boolean;
   begin
-    GetVariantFromJSON(Val,wasString,Value,nil,AllowDouble);
+    val := GetJSONField(JSON,JSON,@wasString,EndOfObject);
+    GetVariantFromJSON(val,wasString,Value,nil,AllowDouble);
     if JSON=nil then
       JSON := @NULCHAR;
   end;
 var i: integer;
-    VariantType: ^TSynInvokeableVariantType;
+    t: ^TSynInvokeableVariantType;
     ToBeParsed: PUTF8Char;
     wasParsedWithinString: boolean;
+    wasString: boolean;
 begin
   {$ifndef FPC}if TVarData(Value).VType and VTYPE_STATIC<>0 then{$endif}
     VarClear(Value);
   if (Options<>nil) and (dvoAllowDoubleValue in Options^) then
-    AllowDouble := true; // for ProcessSimple() above
+    AllowDouble := true; // for ProcessField() above
   if EndOfObject<>nil then
     EndOfObject^ := ' ';
   if JSON^ in [#1..' '] then repeat inc(JSON) until not(JSON^ in [#1..' ']);
-  if (Options=nil) or (JSON^ in ['-','1'..'9']) then begin // obvious simple type
-    ProcessSimple(GetJSONField(JSON,JSON,@wasString,EndOfObject));
+  if (Options=nil) or (JSON^ in ['-','0'..'9']) or (PInteger(JSON)^=NULL_LOW) or
+     (PInteger(JSON)^=TRUE_LOW) or (PInteger(JSON)^=FALSE_LOW) then begin
+    ProcessField; // obvious simple type
     exit;
   end;
+  wasParsedWithinString := false;
   if JSON^='"' then
     if dvoJSONObjectParseWithinString in Options^ then begin
       ToBeParsed := GetJSONField(JSON,JSON,@wasString,EndOfObject);
       EndOfObject := nil; // already set just above
       wasParsedWithinString := true;
     end else begin
-      ProcessSimple(GetJSONField(JSON,JSON,@wasString,EndOfObject));
+      ProcessField;
       exit;
-    end else begin
+    end else
       ToBeParsed := JSON;
-      wasParsedWithinString := false;
-    end;
-  if (SynVariantTypes<>nil) and
-     not (dvoJSONParseDoNotTryCustomVariants in Options^) then begin
-    VariantType := pointer(SynVariantTypes.List);
-    for i := 1 to SynVariantTypes.Count do
-      if VariantType^.TryJSONToVariant(ToBeParsed,Value,EndOfObject) then begin
+  t := pointer(SynVariantTypes);
+  if (t<>nil) and not(dvoJSONParseDoNotTryCustomVariants in Options^) then
+    for i := 1 to PDynArrayRec(PtrInt(t)-SizeOf(TDynArrayRec))^.length do
+      if t^.TryJSONToVariant(ToBeParsed,Value,EndOfObject) then begin
         if not wasParsedWithinString then
           JSON := ToBeParsed;
         exit;
       end else
-        inc(VariantType);
-  end;
+      inc(t);
   if ToBeParsed^ in ['[','{'] then begin
     // default JSON parsing and conversion to TDocVariant instance
     ToBeParsed := TDocVariantData(Value).InitJSONInPlace(ToBeParsed,Options^,EndOfObject);
+    if ToBeParsed=nil then begin
+      TDocVariantData(Value).Clear;
+      exit; // eror parsing
+    end;
     if not wasParsedWithinString then
       JSON := ToBeParsed;
   end else
-    // process to simple variant types
+    // back to simple variant types
     if wasParsedWithinString then
-      ProcessSimple(ToBeParsed) else
-      ProcessSimple(GetJSONField(JSON,JSON,@wasString,EndOfObject));
+      GetVariantFromJSON(ToBeParsed,wasString,Value,nil,AllowDouble) else
+      ProcessField;
 end;
 
 function TextToVariantNumberTypeNoDouble(JSON: PUTF8Char): word;
@@ -46080,6 +46423,26 @@ dbl:  VDouble := GetExtended(JSON,err);
     end;
   end;
   result := false;
+end;
+
+procedure JSONToVariantInPlace(var Value: variant; JSON: PUTF8Char;
+  Options: TDocVariantOptions; AllowDouble: boolean);
+begin
+  if (JSON<>nil) and (JSON^<>#0) then
+    GetJSONToAnyVariant(Value,JSON,nil,@Options,AllowDouble) else
+    VarClear(Value);
+end;
+
+function JSONToVariant(const JSON: RawUTF8; Options: TDocVariantOptions;
+  AllowDouble: boolean): variant;
+var tmp: TSynTempBuffer;
+begin
+  tmp.Init(JSON); // temp copy before in-place decoding
+  try
+    JSONToVariantInPlace(result,tmp.buf,Options,AllowDouble);
+  finally
+    tmp.Done;
+  end;
 end;
 
 procedure TextToVariant(const aValue: RawUTF8; AllowVarDouble: boolean;
@@ -46306,16 +46669,15 @@ end;
 {$endif FPC}
 
 function SynRegisterCustomVariantType(aClass: TSynInvokeableVariantTypeClass): TSynInvokeableVariantType;
-var i: integer;
+var i: PtrInt;
 {$ifdef DOPATCHDISPINVOKE}
 {$ifdef NOVARCOPYPROC}
     VarMgr: TVariantManager;
 {$endif}
 {$endif}
 begin
+  {$ifdef DOPATCHDISPINVOKE}
   if SynVariantTypes=nil then begin
-    {$ifndef FPC}
-    {$ifdef DOPATCHDISPINVOKE}
     {$ifndef CPU64} // we NEED our patched RTL on Win64
     if DebugHook=0 then // patch VCL/RTL only outside debugging
     {$endif} begin
@@ -46327,17 +46689,15 @@ begin
       RedirectCode(VariantsDispInvokeAddress,@SynVarDispProc);
       {$endif NOVARCOPYPROC}
     end;
-    {$endif DOPATCHDISPINVOKE}
-    {$endif FPC}
-    GarbageCollectorFreeAndNil(SynVariantTypes,TObjectList.Create);
   end else
-    for i := 0 to SynVariantTypes.Count-1 do
-    if PPointer(SynVariantTypes.List[i])^=pointer(aClass) then begin
-      result := SynVariantTypes.List[i]; // returns already registered instance
-      exit;
-    end;
+  {$endif DOPATCHDISPINVOKE}
+    for i := 0 to length(SynVariantTypes)-1 do
+      if PPointer(SynVariantTypes[i])^=pointer(aClass) then begin
+        result := SynVariantTypes[i]; // returns already registered instance
+        exit;
+      end;
   result :=  aClass.Create; // register variant type
-  SynVariantTypes.Add(result);
+  ObjArrayAdd(SynVariantTypes,result);
 end;
 
 
@@ -46773,7 +47133,7 @@ begin
           intnames.UniqueText(VName[VCount]);
         GetJSONToAnyVariant(VValue[VCount],JSON,@EndOfObject,@VOptions,false);
         if JSON=nil then
-          if EndOfObject=']' then // valid end input
+          if EndOfObject='}' then // valid end input
             JSON := @NULCHAR else
             exit; // invalid input
         if intvalues<>nil then
@@ -47772,7 +48132,9 @@ begin
   if (integer(VType)<>DocVariantVType) or not(dvoIsObject in VOptions) or (VCount=0) then
     result := nil else begin
     if Assigned(aSortedCompare) then
-      ndx := FastFindPUTF8CharSorted(pointer(VName),VCount-1,pointer(aName),aSortedCompare) else
+      if @aSortedCompare=@StrComp then
+        ndx := FastFindPUTF8CharSorted(pointer(VName),VCount-1,pointer(aName)) else
+        ndx := FastFindPUTF8CharSorted(pointer(VName),VCount-1,pointer(aName),aSortedCompare) else
       ndx := FindRawUTF8(VName,VCount,aName,not(dvoNameCaseSensitive in VOptions));
     if ndx>=0 then
       result := @VValue[ndx] else
@@ -51470,7 +51832,6 @@ begin
     if result>v then
       exit;
   end;
-  result := maxInt; // would never happen
 end;
 
 function TDynArrayHasher.HashTableIndex(aHashCode: cardinal): cardinal;

@@ -45,10 +45,6 @@ unit SynMustache;
 
   ***** END LICENSE BLOCK *****
 
-
-  Version 1.18
-  - initial revision
-
 }
 
 
@@ -62,7 +58,8 @@ uses
   {$endif}
   Variants,
   SysUtils,
-  SynCommons;
+  SynCommons,
+  SynTable;
 
 
 type

@@ -13424,7 +13424,11 @@ type
   {$ifdef MSWINDOWS}
   THeapMemoryStream = class(TMemoryStream)
   protected
+    {$if CompilerVersion >= 35.0}
+    function Realloc(var NewCapacity: NativeInt): Pointer; override;
+    {$else}
     function Realloc(var NewCapacity: longint): Pointer; override;
+    {$endif}
   end;
   {$else}
   THeapMemoryStream = TMemoryStream;
@@ -39738,7 +39742,11 @@ end;
 const
   MemoryDelta = $8000; // 32 KB granularity (must be a power of 2)
 
+{$if CompilerVersion >= 35.0}
+function THeapMemoryStream.Realloc(var NewCapacity: NativeInt): Pointer;
+{$else}
 function THeapMemoryStream.Realloc(var NewCapacity: longint): Pointer;
+{$endif}
 // allocates memory from Delphi heap (FastMM4/SynScaleMM) and not windows.Global*()
 // and uses bigger growing size -> a lot faster
 var i: PtrInt;
@@ -57763,7 +57771,8 @@ begin
     {$elseif defined(VER310)}'Delphi 10.1 Berlin'
     {$elseif defined(VER320)}'Delphi 10.2 Tokyo'
     {$elseif defined(VER330)}'Delphi 10.3 Rio'
-    {$elseif defined(VER340)}'Delphi 10.4 Next'
+    {$elseif defined(VER340)}'Delphi 10.4 Sydney'
+    {$elseif defined(VER350)}'Delphi 11.0 Alexandria'
     {$ifend}
   {$endif CONDITIONALEXPRESSIONS}
 {$endif FPC}

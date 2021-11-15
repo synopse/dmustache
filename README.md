@@ -4,7 +4,7 @@
 Presentation
 ============
 
-  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to Delphi 10.3, and FPC/Lazarus;
+  * SynMustache is the first Delphi implementation of Mustache, supporting Delphi 6 up to latest Delphi, and FPC/Lazarus;
   * It has a separate parser and renderer (so you can compile your templates ahead of time);
   * The parser features a shared cache of compiled templates;
   * It [passes all official Mustache specification tests](https://github.com/mustache/spec) - including all weird whitespace process;

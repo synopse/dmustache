@@ -6,7 +6,7 @@ unit SynTable;
 (*
     This file is part of Synopse framework.
 
-    Synopse framework. Copyright (C) 2020 Arnaud Bouchez
+    Synopse framework. Copyright (C) 2021 Arnaud Bouchez
       Synopse Informatique - https://synopse.info
 
   *** BEGIN LICENSE BLOCK *****
@@ -25,7 +25,7 @@ unit SynTable;
 
   The Initial Developer of the Original Code is Arnaud Bouchez.
 
-  Portions created by the Initial Developer are Copyright (C) 2020
+  Portions created by the Initial Developer are Copyright (C) 2021
   the Initial Developer. All Rights Reserved.
 
   Contributor(s):
@@ -96,7 +96,8 @@ type
   // are handled with dedicated code, optionally with case-insensitive search
   // - consider using TMatchs (or SetMatchs/TMatchDynArray) if you expect to
   // search for several patterns, or even TExprParserMatch for expression search
-  {$ifdef UNICODE}TMatch = record{$else}TMatch = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TMatch = record
+    {$else}TMatch = object{$endif}
   private
     Pattern, Text: PUTF8Char;
     P, T, PMax, TMax: PtrInt;
@@ -306,6 +307,26 @@ const
   // - for a more detailled soundex, use 4 bits resolution, which will
   // compute up to 7 soundex chars in a cardinal (that's our choice)
   SOUNDEX_BITS = 4;
+
+var
+  DoIsValidUTF8: function(source: PUTF8Char): Boolean;
+  DoIsValidUTF8Len: function(source: PUTF8Char; sourcelen: PtrInt): Boolean;
+
+/// returns TRUE if the supplied buffer has valid UTF-8 encoding
+// - will stop when the buffer contains #0
+// - on Haswell AVX2 Intel/AMD CPUs, will use very efficient ASM
+function IsValidUTF8(source: PUTF8Char): Boolean; overload; {$ifdef HASINLINE}inline;{$endif}
+
+/// returns TRUE if the supplied buffer has valid UTF-8 encoding
+// - will also refuse #0 characters within the buffer
+// - on Haswell AVX2 Intel/AMD CPUs, will use very efficient ASM
+function IsValidUTF8(source: PUTF8Char; sourcelen: PtrInt): Boolean; overload; {$ifdef HASINLINE}inline;{$endif}
+
+/// returns TRUE if the supplied buffer has valid UTF-8 encoding
+// - will also refuse #0 characters within the buffer
+// - on Haswell AVX2 Intel/AMD CPUs, will use very efficient ASM
+function IsValidUTF8(const source: RawUTF8): Boolean; overload;
+
 
 
 { ************ filtering and validation classes and functions ************** }
@@ -697,6 +718,20 @@ type
     property UTF8Length: boolean read fUTF8Length write fUTF8Length;
   end;
 
+resourcestring
+  sInvalidIPAddress = '"%s" is an invalid IP v4 address';
+  sInvalidEmailAddress = '"%s" is an invalid email address';
+  sInvalidPattern = '"%s" does not match the expected pattern';
+  sCharacter01n = 'character,character,characters';
+  sInvalidTextLengthMin = 'Expect at least %d %s';
+  sInvalidTextLengthMax = 'Expect up to %d %s';
+  sInvalidTextChar = 'Expect at least %d %s %s,Expect up to %d %s %s,'+
+    'alphabetical,digital,punctuation,lowercase,uppercase,space,'+
+    'Too much spaces on the left,Too much spaces on the right';
+  sValidationFailed = '"%s" rule failed';
+  sValidationFieldVoid = 'An unique key field must not be void';
+  sValidationFieldDuplicate = 'Value already used for this unique key field';
+
 
 { ************ Database types and classes ************************** }
 
@@ -724,6 +759,7 @@ type
   /// array of field/parameter/column types for abstract database access
   // - this array as a fixed size, ready to handle up to MAX_SQLFIELDS items
   TSQLDBFieldTypeArray = array[0..MAX_SQLFIELDS-1] of TSQLDBFieldType;
+  PSQLDBFieldTypeArray = ^TSQLDBFieldTypeArray;
 
   /// how TSQLVar may be processed
   // - by default, ftDate will use seconds resolution unless svoDateWithMS is set
@@ -822,7 +858,8 @@ type
     // - if no Stream is supplied, a temporary memory stream will be created
     // (it's faster to supply one, e.g. any TSQLRest.TempMemoryStream)
     constructor Create(aStream: TStream; Expand, withID: boolean;
-      const Fields: TSQLFieldIndexDynArray=nil; aBufSize: integer=8192); overload;
+      const Fields: TSQLFieldIndexDynArray=nil; aBufSize: integer=8192;
+      aStackBuffer: PTextWriterStackBuffer=nil); overload;
     /// rewind the Stream position and write void JSON object
     procedure CancelAllVoid;
     /// write or init field names for appropriate JSON Expand later use
@@ -915,7 +952,7 @@ procedure VariantToSQLVar(const Input: variant; var temp: RawByteString;
   var Output: TSQLVar);
 
 /// guess the correct TSQLDBFieldType from a variant type
-function VariantVTypeToSQLDBFieldType(VType: word): TSQLDBFieldType;
+function VariantVTypeToSQLDBFieldType(VType: cardinal): TSQLDBFieldType;
 
 /// guess the correct TSQLDBFieldType from a variant value
 function VariantTypeToSQLDBFieldType(const V: Variant): TSQLDBFieldType;
@@ -1277,7 +1314,8 @@ type
   // - is also safer, since will check for reaching end of buffer
   // - raise a EFastReader exception on decoding error (e.g. if a buffer
   // overflow may occur) or call OnErrorOverflow/OnErrorData event handlers
-  {$ifdef FPC_OR_UNICODE}TFastReader = record{$else}TFastReader = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TFastReader = record
+    {$else}TFastReader = object{$endif}
   public
     /// the current position in the memory
     P: PAnsiChar;
@@ -1966,9 +2004,6 @@ type
   // - this class is thread-safe if you use properly the associated Safe lock
   TSynCache = class(TSynPersistentLock)
   protected
-    /// last index in fNameValue.List[] if was added by Find()
-    // - contains -1 if no previous immediate call to Find()
-    fFindLastAddedIndex: integer;
     fFindLastKey: RawUTF8;
     fNameValue: TSynNameValue;
     fRamUsed: cardinal;
@@ -2166,7 +2201,7 @@ type
     fReaderTemp: PRawByteString;
     fLoadFromLastUncompressed, fSaveToLastUncompressed: integer;
     fLoadFromLastAlgo: TAlgoCompress;
-    /// low-level virtual methods implementing the persistence reading
+    /// low-level virtual methods implementing the persistence
     procedure LoadFromReader; virtual;
     procedure SaveToWriter(aWriter: TFileBufferWriter); virtual;
   public
@@ -2249,7 +2284,8 @@ type
   TRawByteStringGroupValueDynArray = array of TRawByteStringGroupValue;
 
   /// store several RawByteString content with optional concatenation
-  {$ifdef UNICODE}TRawByteStringGroup = record{$else}TRawByteStringGroup = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TRawByteStringGroup = record
+    {$else}TRawByteStringGroup = object{$endif}
   public
     /// actual list storing the data
     Values: TRawByteStringGroupValueDynArray;
@@ -2333,8 +2369,8 @@ type
 
   /// simple stack-allocated type for handling a non-void type names list
   // - Delphi "object" is buggy on stack -> also defined as record with methods
-  {$ifdef FPC_OR_UNICODE}TPropNameList = record
-  {$else}TPropNameList = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TPropNameList = record
+    {$else}TPropNameList = object{$endif}
   public
     /// the actual names storage
     Values: TRawUTF8DynArray;
@@ -2375,7 +2411,8 @@ type
   // - bits 0..14 map a 15-bit increasing counter (collision-free)
   // - bits 15..30 map a 16-bit process identifier
   // - bits 31..63 map a 33-bit UTC time, encoded as seconds since Unix epoch
-  {$ifdef FPC_OR_UNICODE}TSynUniqueIdentifierBits = record{$else}TSynUniqueIdentifierBits = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TSynUniqueIdentifierBits = record
+    {$else}TSynUniqueIdentifierBits = object{$endif}
   public
     /// the actual 64-bit storage value
     // - in practice, only first 63 bits are used
@@ -2655,6 +2692,8 @@ type
     function ComputeCredential(previous: boolean; const UserName,PassWord: RawUTF8): cardinal; virtual;
     function GetPassword(const UserName: RawUTF8; out Password: RawUTF8): boolean; virtual; abstract;
     function GetUsersCount: integer; virtual; abstract;
+    // check the given Hash challenge, against stored credentials
+    function CheckCredentials(const UserName: RaWUTF8; Hash: cardinal): boolean; virtual;
   public
     /// initialize the authentication scheme
     constructor Create;
@@ -2916,9 +2955,6 @@ type
     function NextPendingTask: RawByteString; virtual;
     /// flush all pending tasks
     procedure Clear; virtual;
-    /// access to the locking methods of this instance
-    // - use Safe.Lock/TryLock with a try ... finally Safe.Unlock block
-    property Safe: PSynlocker read fSafe;
     /// access to the internal TPendingTaskListItem.Timestamp stored value
     // - corresponding to the current time
     // - default implementation is to return GetTickCount64, with a 16 ms
@@ -3439,7 +3475,7 @@ type
   TBlockingProcessPool = class(TSynPersistent)
   protected
     fClass: TBlockingProcessPoolItemClass;
-    fPool: TObjectListLocked;
+    fPool: TSynObjectListLocked;
     fCallCounter: TBlockingProcessPoolCall; // set TBlockingProcessPoolItem.Call
   public
     /// initialize the pool, for a given implementation class
@@ -3497,8 +3533,9 @@ type
   TSystemUseDataDynArray = array of TSystemUseData;
 
   /// low-level structure used to compute process memory and CPU usage
-  {$ifdef FPC_OR_UNICODE}TProcessInfo = record private
-  {$else}TProcessInfo = object protected{$endif}
+  {$ifdef USERECORDWITHMETHODS}TProcessInfo = record
+    {$else}TProcessInfo = object {$endif}
+  private
     {$ifdef MSWINDOWS}
     fSysPrevIdle, fSysPrevKernel, fSysPrevUser,
     fDiffIdle, fDiffKernel, fDiffUser, fDiffTotal: Int64;
@@ -3794,8 +3831,8 @@ type
 
   /// used to store Time Zone information for a single area in TSynTimeZone
   // - Delphi "object" is buggy on stack -> also defined as record with methods
-  {$ifdef FPC_OR_UNICODE}TTimeZoneData = record
-  {$else}TTimeZoneData = object{$endif}
+  {$ifdef USERECORDWITHMETHODS}TTimeZoneData = record
+    {$else}TTimeZoneData = object{$endif}
   public
     id: TTimeZoneID;
     display: RawUTF8;
@@ -3867,7 +3904,7 @@ type
     function SaveToBuffer: RawByteString;
     /// retrieve the time bias (in minutes) for a given date/time on a TzId
     function GetBiasForDateTime(const Value: TDateTime; const TzId: TTimeZoneID;
-      out Bias: integer; out HaveDaylight: boolean): boolean;
+      out Bias: integer; out HaveDaylight: boolean; DateIsUTC: boolean=false): boolean;
     /// retrieve the display text corresponding to a TzId
     // - returns '' if the supplied TzId is not recognized
     function GetDisplay(const TzId: TTimeZoneID): RawUTF8;
@@ -3938,7 +3975,7 @@ function GetDiskInfo(var aDriveFolderOrFile: TFileName;
   {$ifdef MSWINDOWS}; aVolumeName: PFileName = nil{$endif}): boolean;
 
 
-{ ************ Markup (e.g. Emoji) process  ************************** }
+{ ************ Markup (e.g. HTML or Emoji) process ******************** }
 
 type
   /// tune AddHtmlEscapeWiki/AddHtmlEscapeMarkdown wrapper functions process
@@ -4565,9 +4602,9 @@ type
     // - you should call OrderedIndexRefresh method to ensure it is sorted
     OrderedIndexNotSorted: boolean;
     /// all TSynValidate instances registered per each field
-    Filters: TObjectList;
+    Filters: TSynObjectList;
     /// all TSynValidate instances registered per each field
-    Validates: TObjectList;
+    Validates: TSynObjectList;
     /// low-level binary comparison used by IDSort and TSynTable.IterateJSONValues
     // - P1 and P2 must point to the values encoded in our SBF compact binary format
     {$ifdef SORTCOMPAREMETHOD}
@@ -4723,18 +4760,18 @@ type
   // - is defined either as an object either as a record, due to a bug
   // in Delphi 2009/2010 compiler (at least): this structure is not initialized
   // if defined as an object on the stack, but will be as a record :(
-  {$ifdef UNICODE}TSynTableData = record{$else}TSynTableData = object{$endif UNICODE}
-  {$ifdef UNICODE}private{$else}protected{$endif UNICODE}
-    VType: TVarType;
-    Filler: array[1..SizeOf(TVarData)-SizeOf(TVarType)-SizeOf(pointer)*2-4] of byte;
+  {$ifdef USERECORDWITHMETHODS}TSynTableData = record
+    {$else}TSynTableData = object {$endif UNICODE}
+  private
+    VType: cardinal; // defined as cardinal not as word for proper aligment
     VID: integer;
     VTable: TSynTable;
     VValue: TSBFString;
     {$ifndef NOVARIANTS}
-    function GetFieldValue(const FieldName: RawUTF8): Variant; overload;
     function GetFieldVarData(FieldName: PUTF8Char; FieldNameLen: PtrInt; var Value: TVarData): boolean;
     procedure GetFieldVariant(const FieldName: RawUTF8; var result: Variant);
-    procedure SetFieldValue(const FieldName: RawUTF8; const Value: Variant); overload;
+    function GetField(const FieldName: RawUTF8): Variant;
+    procedure SetField(const FieldName: RawUTF8; const Value: Variant);
     {$endif}
     /// raise an exception if VTable=nil
     procedure CheckVTableInitialized;
@@ -4755,13 +4792,13 @@ type
     property SBF: TSBFString read VValue;
     {$ifndef NOVARIANTS}
     /// set or retrieve a field value from a variant data
-    property Field[const FieldName: RawUTF8]: Variant read GetFieldValue write SetFieldValue;
+    property Field[const FieldName: RawUTF8]: Variant read GetField write SetField;
     /// get a field value for a specified field
     // - this method is faster than Field[], because it won't look for the field name
-    function GetFieldValue(aField: TSynTableFieldProperties): Variant; overload;
+    function GetFieldValue(aField: TSynTableFieldProperties): Variant;
     /// set a field value for a specified field
     // - this method is faster than Field[], because it won't look for the field name
-    procedure SetFieldValue(aField: TSynTableFieldProperties; const Value: Variant); overload;
+    procedure SetFieldValue(aField: TSynTableFieldProperties; const Value: Variant);
       {$ifdef HASINLINE}inline;{$endif}
     {$endif}
     /// set a field value for a specified field, from SBF-encoded data
@@ -5056,6 +5093,10 @@ type
     procedure Copy(var Dest: TVarData; const Source: TVarData;
       const Indirect: Boolean); override;
   end;
+
+/// initialize TSynTableVariantType if needed, and return the correspongind VType
+function SynTableVariantVarType: cardinal;
+
 {$endif NOVARIANTS}
 
 const
@@ -5109,6 +5150,11 @@ procedure ToSBFStr(const Value: RawByteString; out Result: TSBFString);
 
 implementation
 
+{$ifdef WITH_FASTMM4STATS}
+uses
+  FastMM4; // override OS information by actual FastMM4 status
+{$endif WITH_FASTMM4STATS}
+
 {$ifdef FPCLINUX}
 uses
   termio,
@@ -5130,6 +5176,13 @@ uses
 
 var
   SynTableVariantType: TCustomVariantType = nil;
+
+function SynTableVariantVarType: cardinal;
+begin
+  if SynTableVariantType=nil then
+    SynTableVariantType := SynRegisterCustomVariantType(TSynTableVariantType);
+  result := SynTableVariantType.VarType;
+end;
 
 procedure TSynTableVariantType.Clear(var V: TVarData);
 begin
@@ -5161,7 +5214,7 @@ function TSynTableVariantType.IntSet(const Instance, Value: TVarData;
 var aName: RawUTF8;
 begin
   FastSetString(aName,Name,NameLen);
-  TSynTableData(Instance).SetFieldValue(aName,Variant(Value));
+  TSynTableData(Instance).SetField(aName,Variant(Value));
   result := true;
 end;
 
@@ -5195,7 +5248,7 @@ end;
 { TSynTable }
 
 {$ifdef CPUX86}
-function SortQWord(const A,B: QWord): integer;
+function SortQWord(const A,B: QWord): integer; {$ifdef FPC} nostackframe; assembler; {$endif}
 asm // Delphi x86 compiler is not efficient, and oldest even incorrect
         mov     ecx, [eax]
         mov     eax, [eax + 4]
@@ -5211,7 +5264,7 @@ asm // Delphi x86 compiler is not efficient, and oldest even incorrect
 @p:     mov     eax, 1
 end;
 
-function SortInt64(const A,B: Int64): integer;
+function SortInt64(const A,B: Int64): integer; {$ifdef FPC} nostackframe; assembler; {$endif}
 asm // Delphi x86 compiler is not efficient at compiling below code
         mov     ecx, [eax]
         mov     eax, [eax + 4]
@@ -5964,11 +6017,8 @@ end;
 function TSynTable.Data(aID: integer; RecordBuffer: pointer; RecordBufferLen: Integer): Variant;
 var data: TSynTableData absolute result;
 begin
-  if SynTableVariantType=nil then
-    SynTableVariantType := SynRegisterCustomVariantType(TSynTableVariantType);
-  {$ifndef FPC}if data.VType and VTYPE_STATIC<>0 then{$endif}
-    VarClear(result);
-  data.VType := SynTableVariantType.VarType;
+  VarClear(result);
+  data.VType := SynTableVariantVarType;
   data.VID := aID;
   data.VTable := self;
   pointer(data.VValue) := nil; // avoid GPF
@@ -6198,8 +6248,8 @@ var len: integer;
     PA: PAnsiChar absolute FieldBuffer;
     PU: PUTF8Char absolute FieldBuffer;
     tmp: RawByteString;
-    {$ifndef UNICODE}
-    WS: WideString;
+    {$ifndef HASVARUSTRING}
+    WS: SynUnicode;
     {$endif}
 begin
   case FieldType of
@@ -6234,7 +6284,7 @@ begin
   tftWinAnsi: begin
     len := FromVarUInt32(PB);
     if len>0 then
-      {$ifdef UNICODE}
+      {$ifdef HASVARUSTRING}
       result := WinAnsiToUnicodeString(PA,len)
       {$else}
       result := CurrentAnsiConvert.AnsiToAnsi(WinAnsiConvert,PA,len)
@@ -6244,7 +6294,7 @@ begin
   tftUTF8: begin
     len := FromVarUInt32(PB);
     if len>0 then
-      {$ifdef UNICODE}
+      {$ifdef HASVARUSTRING}
       result := UTF8DecodeToUnicodeString(PU,len)
       {$else} begin
         UTF8ToSynUnicode(PU,len,WS);
@@ -6292,7 +6342,7 @@ begin
   tftCurrency:
     Curr64ToStr(PInt64(FieldBuffer)^,result);
   tftDouble:
-    ExtendedToStr(unaligned(PDouble(FieldBuffer)^),DOUBLE_PRECISION,result);
+    DoubleToStr(unaligned(PDouble(FieldBuffer)^),result);
   // some variable-size field value
   tftVarUInt32:
     UInt32ToUtf8(FromVarUInt32(PB),result);
@@ -6850,12 +6900,12 @@ begin
 end;
 
 function TSynTableFieldProperties.AddFilterOrValidate(aFilter: TSynFilterOrValidate): TSynFilterOrValidate;
-procedure Add(var List: TObjectList);
-begin
-  if List=nil then
-    List := TObjectList.Create;
-  List.Add(result);
-end;
+  procedure Add(var List: TSynObjectList);
+  begin
+    if List=nil then
+      List := TSynObjectList.Create;
+    List.Add(result);
+  end;
 begin
   result := aFilter;
   if (self=nil) or (result=nil) then
@@ -7170,7 +7220,7 @@ begin
       soContains: begin
         dec(L,ValueLen);
         while L>=0 do begin
-          while (L>=0) and not(byte(SBF^) in IsWord) do begin
+          while (L>=0) and not(tcWord in TEXT_CHARS[SBF^]) do begin
             dec(L);
             inc(SBF);
           end; // begin of next word reached
@@ -7182,7 +7232,7 @@ begin
           end else
             if StrCompIL(SBF,Value,ValueLen,0)=0 then
               exit;
-          while (L>=0) and (byte(SBF^) in IsWord) do begin
+          while (L>=0) and (tcWord in TEXT_CHARS[SBF^]) do begin
             dec(L);
             inc(SBF);
           end; // end of word reached
@@ -7310,7 +7360,7 @@ begin
       B := P;
       repeat
         inc(P);
-      until not(ord(P^) in IsJsonIdentifier);
+      until not (jcJsonIdentifier in JSON_CHARS[P^]);
       FastSetString(select.SubField,B,P-B);
       fHasSelectSubFields := true;
     end;
@@ -7440,7 +7490,7 @@ begin
     B := P;
     repeat
       inc(P);
-    until not(ord(P^) in IsJsonIdentifier);
+    until not (jcJsonIdentifier in JSON_CHARS[P^]);
     FastSetString(Where.SubField,B,P-B);
     fWhereHasSubFields := true;
     P := GotoNextNotSpace(P);
@@ -7678,7 +7728,7 @@ lim2: if IdemPropNameU(Prop,'LIMIT') then
         end else
         exit; // incorrect SQL statement
       end else
-      if Prop<>'' then
+      if (Prop<>'') or not(GotoNextNotSpace(P)^ in [#0, ';']) then
         exit else // incorrect SQL statement
         break; // reached the end of the statement
     end;
@@ -7719,7 +7769,7 @@ end;
 
 {$ifndef NOVARIANTS}
 
-function TSynTableData.GetFieldValue(const FieldName: RawUTF8): Variant;
+function TSynTableData.GetField(const FieldName: RawUTF8): Variant;
 begin
   GetFieldVariant(FieldName,result);
 end;
@@ -7779,15 +7829,16 @@ end;
 
 procedure TSynTableData.Init(aTable: TSynTable; aID: Integer);
 begin
-  VTable := aTable;
+  VType := SynTableVariantVarType;
   VID := aID;
+  VTable := aTable;
   VValue := VTable.DefaultRecordData;
-  {$ifdef UNICODE}FillcharFast(Filler,SizeOf(Filler),0);{$endif}
 end;
 
 procedure TSynTableData.Init(aTable: TSynTable; aID: Integer;
   RecordBuffer: pointer; RecordBufferLen: integer);
 begin
+  VType := SynTableVariantVarType;
   VTable := aTable;
   if (RecordBufferLen=0) or (RecordBuffer=nil) then begin
     VID := 0;
@@ -7799,7 +7850,7 @@ begin
 end;
 
 {$ifndef NOVARIANTS}
-procedure TSynTableData.SetFieldValue(const FieldName: RawUTF8;
+procedure TSynTableData.SetField(const FieldName: RawUTF8;
   const Value: Variant);
 var F: TSynTableFieldProperties;
 begin
@@ -8862,7 +8913,7 @@ begin
     {$else}
     v := NormToUpperAnsi7Byte[ord(p^)]; // 7 bit char uppercase
     {$endif}
-    if not (v in IsWord) then break;
+    if not (tcWord in TEXT_BYTES[v]) then break;
     inc(p);
     dec(v,ord('B'));
     if v>high(TSoundExValues) then continue;
@@ -8905,7 +8956,7 @@ begin
   if Values<>nil then
   repeat
     v := GetNextUTF8Upper(U);
-    if not (v in IsWord) then break;
+    if not (tcWord in TEXT_BYTES[v]) then break;
     dec(v,ord('B'));
     if v>high(TSoundExValues) then continue;
     v := Values[v]; // get soundex value
@@ -8983,15 +9034,15 @@ begin
     repeat
       if A^=#0 then exit else
 {$ifdef USENORMTOUPPER}
-        if not(NormToUpperByte[ord(A^)] in IsWord) then break else inc(A);
-{$else} if not(ord(A^) in IsWord) then break else inc(A); {$endif}
+        if not(tcWord in TEXT_CHARS[NormToUpper[A^]]) then break else inc(A);
+{$else} if not(tcWord in TEXT_CHARS[A^]) then break else inc(A); {$endif}
     until false;
     // find beginning of next word
     repeat
       if A^=#0 then exit else
 {$ifdef USENORMTOUPPER}
-        if NormToUpperByte[ord(A^)] in IsWord then break else inc(A);
-{$else} if ord(A^) in IsWord then break else inc(A); {$endif}
+        if tcWord in TEXT_CHARS[NormToUpper[A^]] then break else inc(A);
+{$else} if tcWord in TEXT_CHARS[A^] then break else inc(A); {$endif}
     until false;
   until false;
 end;
@@ -9019,7 +9070,7 @@ begin
       c := GetNextUTF8Upper(U);
       if c=0 then
         exit;
-    until not(c in IsWord);
+    until not(tcWord in TEXT_BYTES[c]);
     // find beginning of next word
     repeat
       if U=nil then exit;
@@ -9027,7 +9078,7 @@ begin
       c := GetNextUTF8Upper(U);
       if c=0 then
         exit;
-    until c in IsWord;
+    until tcWord in TEXT_BYTES[c];
     U := V;
   until U=nil;
 end;
@@ -9058,9 +9109,9 @@ begin
   end;
   if next<>nil then begin
     {$ifdef USENORMTOUPPER}
-    while NormToUpperByte[ord(A^)] in IsWord do inc(A); // go to end of word
+    while tcWord in TEXT_CHARS[NormToUpper[A^]] do inc(A); // go to end of word
     {$else}
-    while ord(A^) in IsWord do inc(A); // go to end of word
+    while tcWord in TEXT_CHARS[A^] do inc(A); // go to end of word
     {$endif}
     next^ := A;
   end;
@@ -9082,6 +9133,312 @@ begin
   end;
   if next<>nil then
     next^ := FindNextUTF8WordBegin(U);
+end;
+
+{$ifdef ASMX64AVX} // AVX2 ASM not available on Delphi yet
+// adapted from https://github.com/simdjson/simdjson - Apache License 2.0
+function IsValidUtf8LenAvx2(source: PUtf8Char; sourcelen: PtrInt): boolean;
+  {$ifdef FPC}nostackframe; assembler; asm {$else} asm .noframe {$endif FPC}
+        test    source, source
+        jz      @ok
+        test    sourcelen, sourcelen
+        jle     @ok
+        {$ifdef win64} // this ABI doesn't consider rsi/rdi as volatile
+        push    rsi
+        push    rdi
+        {$endif}
+        push    rbp
+        mov     r8, source
+        mov     rdx, sourcelen
+        mov     rsi, r8
+        mov     ecx, 64
+        mov     rax, rsi
+        mov     rdi, rdx
+        mov     rbp, rsp
+        and     rsp, 0FFFFFFFFFFFFFFE0H // align stack at 32 bytes
+        sub     rsp, 160
+        cmp     rdx, 64
+        cmovnc  rcx, rdx
+        sub     rcx, 64
+        je      @small
+        vpxor   xmm3, xmm3, xmm3
+        vmovdqa ymm7,  ymmword ptr [rip + @0f]
+        vmovdqa ymm15, ymmword ptr [rip + @_6]
+        xor     esi, esi
+        vmovdqa ymm14, ymmword ptr [rip + @_7]
+        vmovdqa ymm13, ymmword ptr [rip + @_8]
+        vmovdqa ymm5, ymm3
+        vmovdqa ymm2, ymm3
+        // main processing loop, 64 bytes per iteration
+        align 16
+@loop:  vmovdqu xmm6, xmmword ptr [rax + rsi]
+        vinserti128 ymm0, ymm6, xmmword ptr [rax + rsi + 10H], 01H
+        vmovdqu xmm6, xmmword ptr [rax + rsi + 20H]
+        vinserti128 ymm1, ymm6, xmmword ptr [rax + rsi + 30H], 01H
+        add     rsi, 64
+        vpor    ymm4, ymm1, ymm0
+        vpmovmskb rdx, ymm4 // check set MSB of each 64 bytes
+        test    edx, edx
+        jne     @check
+        vpor    ymm2, ymm5, ymm2
+        vmovdqa ymm4, ymm2
+        cmp     rcx, rsi
+        ja      @loop
+        // process trailing 0..63 bytes
+@trail: sub     rdi, rsi
+        jz      @ended
+        add     rsi, rax
+        vmovdqa xmm0, xmmword ptr [rip + @20]
+        lea     rdx, qword ptr [rsp + 60H] // copy on stack with space padding
+        sub     rsi, rdx
+        vmovdqa xmmword ptr [rdx], xmm0
+        vmovdqa xmmword ptr [rdx + 10H], xmm0
+        vmovdqa xmmword ptr [rdx + 20H], xmm0
+        vmovdqa xmmword ptr [rdx + 30H], xmm0
+@by8:   sub     rdi, 8
+        jb      @by1
+        mov     rax, qword ptr [rsi + rdx]
+        mov     qword ptr [rdx], rax
+        add     rdx, 8 // in-order copy to preserve UTF-8 encoding
+        jmp     @by8
+@by1:   add     rdi, 8
+        jz      @0
+@sml:   mov     al, byte ptr [rsi + rdx]
+        mov     byte ptr [rdx], al
+        add     rdx, 1
+        sub     rdi, 1
+        jnz     @sml
+@0:     vmovdqa ymm1, ymmword ptr [rsp + 60H]
+        vmovdqa ymm2, ymmword ptr [rsp + 80H]
+        vpor    ymm0, ymm1, ymm2
+        vpmovmskb rax, ymm0 // check any set MSB
+        test    eax, eax
+        jne     @last
+@ended: vpor    ymm5, ymm5, ymm4
+@final: vptest  ymm5, ymm5
+        sete    al
+        vzeroupper
+        leave      // mov rsp,rbp + pop rbp
+        {$ifdef win64}
+        pop     rdi
+        pop     rsi
+        {$endif}
+        ret
+@ok:    mov     al, 1
+        ret
+@small: vpxor   xmm4, xmm4, xmm4
+        xor     esi, esi
+        vmovdqa ymm3, ymm4
+        vmovdqa ymm5, ymm4
+        jmp     @trail
+        // validate UTF-8 extra bytes from main loop
+        align 8
+@check: vpsrlw  ymm9, ymm0, 4
+        vpsrlw  ymm12, ymm1, 4
+        vperm2i128 ymm3, ymm3, ymm0, 21H
+        vpalignr ymm5, ymm0, ymm3, 0FH
+        vpalignr ymm11, ymm0, ymm3, 0EH
+        vpsubusb ymm11, ymm11, ymmword ptr [rip + @_9]
+        vpalignr ymm3, ymm0, ymm3, 0DH
+        vperm2i128 ymm0, ymm0, ymm1, 21H
+        vpsubusb ymm3, ymm3, ymmword ptr [rip + @_10]
+        vpalignr ymm8, ymm1, ymm0, 0FH
+        vpsrlw  ymm10, ymm5, 4
+        vpand   ymm5, ymm7, ymm5
+        vpsrlw  ymm6, ymm8, 4
+        vpalignr ymm4, ymm1, ymm0, 0EH
+        vpsubusb ymm4, ymm4, ymmword ptr [rip + @_9]
+        vpalignr ymm0, ymm1, ymm0, 0DH
+        vpsubusb ymm0, ymm0, ymmword ptr [rip + @_10]
+        vpand   ymm10, ymm10, ymm7
+        vpand   ymm6, ymm6, ymm7
+        vpand   ymm8, ymm7, ymm8
+        vpor    ymm3, ymm3, ymm11
+        vpor    ymm0, ymm4, ymm0
+        vpxor   xmm11, xmm11, xmm11
+        vpshufb ymm10, ymm15, ymm10
+        vpshufb ymm5, ymm14, ymm5
+        vpand   ymm9, ymm9, ymm7
+        vpshufb ymm6, ymm15, ymm6
+        vpshufb ymm8, ymm14, ymm8
+        vpand   ymm12, ymm12, ymm7
+        vpand   ymm5, ymm5, ymm10
+        vpcmpgtb ymm3, ymm3, ymm11
+        vpcmpgtb ymm0, ymm0, ymm11
+        vpshufb ymm9, ymm13, ymm9
+        vpand   ymm3, ymm3, ymmword ptr [rip + @_11]
+        vpand   ymm0, ymm0, ymmword ptr [rip + @_11]
+        vpshufb ymm12, ymm13, ymm12
+        vpand   ymm6, ymm6, ymm8
+        vpand   ymm9, ymm5, ymm9
+        vpsubusb ymm5, ymm1, ymmword ptr [rip + @_12]
+        vpand   ymm12, ymm6, ymm12
+        vpxor   ymm9, ymm3, ymm9
+        vmovdqa ymm3, ymm1
+        vpxor   ymm12, ymm0, ymm12
+        vpor    ymm9, ymm9, ymm12
+        vpor    ymm2, ymm9, ymm2
+        vmovdqa ymm4, ymm2
+        cmp     rcx, rsi
+        ja      @loop
+        jmp     @trail
+        // validate UTF-8 extra bytes from input ending
+        align 8
+@last:  vmovdqa ymm5, ymmword ptr [rip + @0f]
+        vperm2i128 ymm3, ymm3, ymm1, 21H
+        vmovdqa ymm9, ymmword ptr [rip + @_7]
+        vpsrlw  ymm11, ymm1, 4
+        vpalignr ymm0, ymm1, ymm3, 0FH
+        vmovdqa ymm13, ymmword ptr [rip + @_10]
+        vmovdqa ymm14, ymmword ptr [rip + @_9]
+        vpsrlw  ymm6, ymm0, 4
+        vpand   ymm0, ymm5, ymm0
+        vpand   ymm11, ymm11, ymm5
+        vmovdqa ymm7, ymmword ptr [rip + @_6]
+        vpshufb ymm10, ymm9, ymm0
+        vpalignr ymm0, ymm1, ymm3, 0EH
+        vpand   ymm6, ymm6, ymm5
+        vmovdqa ymm8, ymmword ptr [rip + @_8]
+        vpalignr ymm3, ymm1, ymm3, 0DH
+        vperm2i128 ymm1, ymm1, ymm2, 21H
+        vpsubusb ymm0, ymm0, ymm14
+        vpsubusb ymm12, ymm3, ymm13
+        vpalignr ymm3, ymm2, ymm1, 0FH
+        vpshufb ymm6, ymm7, ymm6
+        vpsrlw  ymm15, ymm3, 4
+        vpand   ymm3, ymm5, ymm3
+        vpor    ymm0, ymm0, ymm12
+        vpshufb ymm9, ymm9, ymm3
+        vpsrlw  ymm3, ymm2, 4
+        vpand   ymm15, ymm15, ymm5
+        vpand   ymm5, ymm3, ymm5
+        vpalignr ymm3, ymm2, ymm1, 0EH
+        vpxor   xmm12, xmm12, xmm12
+        vpalignr ymm1, ymm2, ymm1, 0DH
+        vpsubusb ymm3, ymm3, ymm14
+        vpshufb ymm11, ymm8, ymm11
+        vpsubusb ymm1, ymm1, ymm13
+        vpcmpgtb ymm0, ymm0, ymm12
+        vpshufb ymm7, ymm7, ymm15
+        vpor    ymm1, ymm3, ymm1
+        vpshufb ymm8, ymm8, ymm5
+        vpsubusb ymm5, ymm2, ymmword ptr [rip + @_12]
+        vmovdqa ymm2, ymmword ptr [rip + @_11]
+        vpcmpgtb ymm1, ymm1, ymm12
+        vpand   ymm6, ymm6, ymm10
+        vpand   ymm7, ymm7, ymm9
+        vpand   ymm0, ymm0, ymm2
+        vpand   ymm11, ymm6, ymm11
+        vpand   ymm8, ymm7, ymm8
+        vpxor   ymm0, ymm0, ymm11
+        vpor    ymm5, ymm4, ymm5
+        vpand   ymm1, ymm1, ymm2
+        vpxor   ymm1, ymm1, ymm8
+        vpor    ymm0, ymm0, ymm1
+        vpor    ymm5, ymm0, ymm5
+        jmp     @final
+        align 16
+@20:    dq 2020202020202020H
+        dq 2020202020202020H
+        align 32
+@0f:    dq 0F0F0F0F0F0F0F0FH
+        dq 0F0F0F0F0F0F0F0FH
+        dq 0F0F0F0F0F0F0F0FH
+        dq 0F0F0F0F0F0F0F0FH
+@_6:    dq 0202020202020202H
+        dq 4915012180808080H
+        dq 0202020202020202H
+        dq 4915012180808080H
+@_7:    dq 0CBCBCB8B8383A3E7H
+        dq 0CBCBDBCBCBCBCBCBH
+        dq 0CBCBCB8B8383A3E7H
+        dq 0CBCBDBCBCBCBCBCBH
+@_8:    dq 0101010101010101H
+        dq 01010101BABAAEE6H
+        dq 0101010101010101H
+        dq 01010101BABAAEE6H
+@_9:    dq 0DFDFDFDFDFDFDFDFH
+        dq 0DFDFDFDFDFDFDFDFH
+        dq 0DFDFDFDFDFDFDFDFH
+        dq 0DFDFDFDFDFDFDFDFH
+@_10:   dq 0EFEFEFEFEFEFEFEFH
+        dq 0EFEFEFEFEFEFEFEFH
+        dq 0EFEFEFEFEFEFEFEFH
+        dq 0EFEFEFEFEFEFEFEFH
+@_11:   dq 8080808080808080H
+        dq 8080808080808080H
+        dq 8080808080808080H
+        dq 8080808080808080H
+@_12:   db 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+        db 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+        db 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0FFH
+        db 0FFH, 0FFH, 0FFH, 0FFH, 0FFH, 0EFH, 0DFH, 0BFH
+end;
+
+function IsValidUTF8Avx2(source: PUTF8Char): Boolean;
+begin
+  result := IsValidUTF8LenAvx2(source,StrLen(source));
+end;
+{$endif ASMX64AVX}
+
+function IsValidUTF8Pas(source: PUTF8Char): Boolean;
+var extra, i: integer;
+    c: cardinal;
+begin
+  result := false;
+  if source<>nil then
+  repeat
+    c := byte(source^);
+    inc(source);
+    if c=0 then break else
+    if c and $80<>0 then begin
+      extra := UTF8_EXTRABYTES[c];
+      if extra=0 then exit else // invalid leading byte
+      for i := 1 to extra do
+        if byte(source^) and $c0<>$80 then
+          exit else
+          inc(source); // check valid UTF-8 content
+    end;
+  until false;
+  result := true;
+end;
+
+function IsValidUTF8LenPas(source: PUTF8Char; sourcelen: PtrInt): Boolean;
+var extra, i: integer;
+    c: cardinal;
+begin
+  result := false;
+  inc(sourcelen,PtrInt(source));
+  if source<>nil then
+    while PtrInt(PtrUInt(source))<sourcelen do begin
+      c := byte(source^);
+      inc(source);
+      if c=0 then exit else
+      if c and $80<>0 then begin
+        extra := UTF8_EXTRABYTES[c];
+        if extra=0 then exit else // invalid leading byte
+        for i := 1 to extra do
+          if (PtrInt(PtrUInt(source))>=sourcelen) or (byte(source^) and $c0<>$80) then
+            exit else
+            inc(source); // check valid UTF-8 content
+      end;
+    end;
+  result := true;
+end;
+
+function IsValidUTF8(source: PUTF8Char): Boolean;
+begin
+  result := DoIsValidUTF8(source);
+end;
+
+function IsValidUTF8(source: PUTF8Char; sourcelen: PtrInt): Boolean;
+begin
+  result := DoIsValidUTF8Len(source,sourcelen);
+end;
+
+function IsValidUTF8(const source: RawUTF8): Boolean;
+begin
+  result := DoIsValidUTF8Len(pointer(Source),length(Source));
 end;
 
 
@@ -9364,7 +9721,7 @@ const TopLevelTLD: array[0..19] of PUTF8Char = (
 begin
   if IsValidEmail(pointer(value)) then
   repeat
-    DOM := lowercase(copy(value,PosEx('@',value)+1,100));
+    DOM := lowercase(copy(value,PosExChar('@',value)+1,100));
     if length(DOM)>63 then
       break; // exceeded 63-character limit of a DNS name
     if (ForbiddenDomains<>'') and (FindCSVIndex(pointer(ForbiddenDomains),DOM)>=0) then
@@ -10125,7 +10482,7 @@ end;
 
 {$ifdef CPUINTEL} // crc32c SSE4.2 hardware accellerated dword hash
 function crc32csse42(buf: pointer): cardinal;
-{$ifdef CPUX86}
+{$ifdef CPUX86} {$ifdef FPC} nostackframe; assembler; {$endif}
 asm
         mov     edx, eax
         xor     eax, eax
@@ -11156,7 +11513,7 @@ var s: TStream;
 begin
   if Append and FileExists(aFileName) then begin
     s := TFileStream.Create(aFileName,fmOpenWrite);
-    s.Seek(0,soFromEnd);
+    s.Seek(0,soEnd);
   end else
     s := TFileStream.Create(aFileName,fmCreate);
   Create(s,BufLen);
@@ -11913,7 +12270,7 @@ begin
     end else
       // file bigger than 2 GB: slower but accurate reading from file
       if Data=nil then begin
-        FileSeek(fMap.FileHandle,soFromCurrent,DataLen);
+        FileSeek64(fMap.FileHandle,DataLen,soFromCurrent);
         result := DataLen;
       end else
         result := FileRead(fMap.FileHandle,Data^,DataLen) else
@@ -12329,7 +12686,7 @@ begin
   if result=0 then
     exit;
   count := result;
-  if count>length(Values) then // only set length is not big enough
+  if count>length(Values) then // change Values[] length only if not big enough
     SetLength(Values,count);
   PI := pointer(Values);
   fixedsize := ReadVarUInt32;
@@ -12394,9 +12751,7 @@ constructor TSynCache.Create(aMaxCacheRamUsed: cardinal; aCaseSensitive: boolean
 begin
   inherited Create;
   fNameValue.Init(aCaseSensitive);
-  fNameValue.DynArray.Capacity := 200; // some space for future cached entries
   fMaxRamUsed := aMaxCacheRamUsed;
-  fFindLastAddedIndex := -1;
   fTimeoutSeconds := aTimeoutSeconds;
 end;
 
@@ -12415,41 +12770,30 @@ end;
 
 procedure TSynCache.Add(const aValue: RawUTF8; aTag: PtrInt);
 begin
-  if (self=nil) or (fFindLastAddedIndex<0) or (fFindLastKey='') then
-    // fFindLastAddedIndex should have been set by a previous call to Find()
+  if (self=nil) or (fFindLastKey='') then
     exit;
   ResetIfNeeded;
   inc(fRamUsed,length(aValue));
-  if fFindLastAddedIndex<0 then // Reset occurred in ResetIfNeeded
-    fNameValue.Add(fFindLastKey,aValue,aTag) else
-    with fNameValue.List[fFindLastAddedIndex] do begin // at Find() position
-      Name := fFindLastKey;
-      Value := aValue;
-      Tag := aTag;
-      fFindLastAddedIndex := -1;
-      fFindLastKey := '';
-    end;
+  fNameValue.Add(fFindLastKey,aValue,aTag);
+  fFindLastKey := '';
 end;
 
 function TSynCache.Find(const aKey: RawUTF8; aResultTag: PPtrInt): RawUTF8;
-var added: boolean;
+var ndx: integer;
 begin
   result := '';
   if self=nil then
     exit;
+  fFindLastKey := aKey;
   if aKey='' then
-    fFindLastAddedIndex := -1 else begin
-    fFindLastAddedIndex := fNameValue.DynArray.FindHashedForAdding(aKey,added);
-    if added then
-      // expect a further call to Add()
-      fFindLastKey := aKey else
-      // match key found
-      with fNameValue.List[fFindLastAddedIndex] do begin
-        result := Value;
-        if aResultTag<>nil then
-          aResultTag^ := Tag;
-        fFindLastAddedIndex := -1;
-      end;
+    exit;
+  ndx := fNameValue.Find(aKey);
+  if ndx<0 then
+    exit;
+  with fNameValue.List[ndx] do begin
+    result := Value;
+    if aResultTag<>nil then
+      aResultTag^ := Tag;
   end;
 end;
 
@@ -12483,16 +12827,10 @@ begin
   fSafe.Lock;
   try
     if Count<>0 then begin
-      if fRamUsed<131072 then // no capacity change for small cache content
-        fNameValue.Count := 0 else
-        with fNameValue.DynArray{$ifdef UNDIRECTDYNARRAY}.InternalDynArray{$endif} do begin
-          Capacity := 0;   // force free all fNameValue.List[] key/value pairs
-          Capacity := 200; // then reserve some space for future cached entries
-        end;
+      fNameValue.DynArray.Clear;
       fNameValue.DynArray.ReHash;
       result := true; // mark something was flushed
     end;
-    fFindLastAddedIndex := -1; // fFindLastKey should remain untouched for Add()
     fRamUsed := 0;
     fTimeoutTix := 0;
   finally
@@ -13700,27 +14038,31 @@ end;
 
 procedure TSynAuthenticationAbstract.AuthenticateUser(const aName, aPassword: RawUTF8);
 begin
-  raise ESynException.CreateFmt('%.AuthenticateUser() is not implemented',[self]);
+  raise ESynException.CreateUTF8('%.AuthenticateUser() is not implemented',[self]);
 end;
 
 procedure TSynAuthenticationAbstract.DisauthenticateUser(const aName: RawUTF8);
 begin
-  raise ESynException.CreateFmt('%.DisauthenticateUser() is not implemented',[self]);
+  raise ESynException.CreateUTF8('%.DisauthenticateUser() is not implemented',[self]);
 end;
 
-function TSynAuthenticationAbstract.CreateSession(const User: RawUTF8; Hash: cardinal): integer;
+function TSynAuthenticationAbstract.CheckCredentials(const UserName: RaWUTF8;
+  Hash: cardinal): boolean;
 var password: RawUTF8;
+begin
+  result := GetPassword(UserName,password) and
+     ((ComputeCredential(false,UserName,password)=Hash) or
+      (ComputeCredential(true,UserName,password)=Hash));
+end;
+
+function TSynAuthenticationAbstract.CreateSession(const User: RawUTF8;
+  Hash: cardinal): integer;
 begin
   result := 0;
   fSafe.Lock;
   try
-    // check the given Hash challenge, against stored credentials
-    if not GetPassword(User,password) then
+    if not CheckCredentials(User,Hash) then
       exit;
-    if (ComputeCredential(false,User,password)<>Hash) and
-       (ComputeCredential(true,User,password)<>Hash) then
-      exit;
-    // create the new session
     repeat
       result := fSessionGenerator;
       inc(fSessionGenerator);
@@ -14278,7 +14620,7 @@ begin
   end;
 end;
 
-function VariantVTypeToSQLDBFieldType(VType: word): TSQLDBFieldType;
+function VariantVTypeToSQLDBFieldType(VType: cardinal): TSQLDBFieldType;
 begin
   case VType of
   varNull:
@@ -14503,11 +14845,16 @@ begin
 end;
 
 constructor TJSONWriter.Create(aStream: TStream; Expand, withID: boolean;
-  const Fields: TSQLFieldIndexDynArray; aBufSize: integer);
+  const Fields: TSQLFieldIndexDynArray; aBufSize: integer;
+  aStackBuffer: PTextWriterStackBuffer);
 begin
   if aStream=nil then
-    CreateOwnedStream else
-    inherited Create(aStream,aBufSize);
+    if aStackBuffer<>nil then
+      CreateOwnedStream(aStackBuffer^) else
+      CreateOwnedStream(aBufSize) else
+    if aStackBuffer<>nil then
+      inherited Create(aStream,aStackBuffer,SizeOf(aStackBuffer^)) else
+      inherited Create(aStream,aBufSize);
   fExpand := Expand;
   fWithID := withID;
   fFields := Fields;
@@ -15871,7 +16218,7 @@ begin
   if aClass=nil then
     fClass := TBlockingProcessPoolItem else
     fClass := aClass;
-  fPool := TObjectListLocked.Create(true);
+  fPool := TSynObjectListLocked.Create;
 end;
 
 const
@@ -16619,7 +16966,7 @@ var i: integer;
      if not withfreespace or not GetDiskInfo(p.mounted,av,fr,tot) then
        {$ifdef MSWINDOWS}
        FormatShort('%: % (%)',[p.mounted[1],p.name,KB(p.size,nospace)],result) else
-       FormatShort(F[nospace],[p.mounted[1],p.name,KB(p.size,nospace)],result);
+       FormatShort(F[nospace],[p.mounted[1],p.name,KB(fr,nospace),KB(tot,nospace)],result);
        {$else}
        FormatShort('% % (%)',[p.mounted,p.name,KB(p.size,nospace)],result) else
        FormatShort(F[nospace],[p.mounted,p.name,KB(fr,nospace),KB(tot,nospace)],result);
@@ -17088,7 +17435,7 @@ end;
 procedure TSynTimeZone.LoadFromBuffer(const Buffer: RawByteString);
 begin
   fZones.LoadFromBinary(AlgoSynLZ.Decompress(Buffer),{nohash=}true);
-  fZones.ReHash(false);
+  fZones.ReHash;
   FreeAndNil(fIds);
   FreeAndNil(fDisplays);
 end;
@@ -17175,7 +17522,8 @@ begin
 end;
 
 function TSynTimeZone.GetBiasForDateTime(const Value: TDateTime;
-  const TzId: TTimeZoneID; out Bias: integer; out HaveDaylight: boolean): boolean;
+  const TzId: TTimeZoneID; out Bias: integer; out HaveDaylight: boolean;
+  DateIsUTC: boolean): boolean;
 var ndx: integer;
     d: TSynSystemTime;
     tzi: PTimeZoneInfo;
@@ -17204,6 +17552,10 @@ begin
     HaveDaylight := true;
     std := tzi.change_time_std.EncodeForTimeChange(d.Year);
     dlt := tzi.change_time_dlt.EncodeForTimeChange(d.Year);
+    if DateIsUTC then begin // std shifts by the DST bias, dst by STD
+      std := ((std*MinsPerDay)+tzi.Bias+tzi.bias_dlt)/MinsPerDay;
+      dlt := ((dlt*MinsPerDay)+tzi.Bias+tzi.bias_std)/MinsPerDay;
+    end;
     if std<dlt then
       if (std<=Value) and (Value<dlt) then
         Bias := tzi.Bias+tzi.bias_std else
@@ -17222,7 +17574,7 @@ var Bias: integer;
 begin
   if (self=nil) or (TzId='') then
     result := UtcDateTime else begin
-    GetBiasForDateTime(UtcDateTime,TzId,Bias,HaveDaylight);
+    GetBiasForDateTime(UtcDateTime,TzId,Bias,HaveDaylight,{DateIsUTC=}true);
     result := ((UtcDateTime*MinsPerDay)-Bias)/MinsPerDay;
   end;
 end;
@@ -17685,7 +18037,7 @@ var W: TTextWriter;
     tmp: TTextWriterStackBuffer;
 begin
   if PosExChar(#$f0,text)=0 then begin
-    result := text; // no smiley UTF-8 for sure
+    result := text; // no UTF-8 smiley for sure
     exit;
   end;
   W := TTextWriter.CreateOwnedStream(tmp);
@@ -18147,6 +18499,16 @@ begin
   EMOJI_AFTERDOTS['P'] := eYum;
   EMOJI_AFTERDOTS['s'] := eScream;
   EMOJI_AFTERDOTS['S'] := eScream;
+  DoIsValidUTF8 := IsValidUTF8Pas;
+  DoIsValidUTF8Len := IsValidUTF8LenPas;
+  {$ifdef ASMX64AVX}
+  if CpuFeatures * [cfAVX2, cfSSE42, cfBMI1, cfBMI2, cfCLMUL] =
+                   [cfAVX2, cfSSE42, cfBMI1, cfBMI2, cfCLMUL] then begin
+    // Haswell CPUs can use simdjson AVX2 asm for IsValidUtf8()
+    DoIsValidUTF8 := IsValidUTF8Avx2;
+    DoIsValidUTF8Len := IsValidUTF8LenAvx2;
+  end;
+  {$endif ASMX64AVX}
 end;
 
 
